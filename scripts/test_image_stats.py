@@ -900,16 +900,18 @@ def create_summary_canvases(image_results, output_dir, summary_items):
     if success_images:
         print(f"  Creating success canvas with {len(success_images)} images...")
         canvas_width, canvas_height, placements = rectangle_pack(
-            success_images, max_width=2500, padding=15
+            success_images, max_width=3840, padding=25
         )
         success_canvas = Image.new("RGB", (canvas_width, canvas_height), "white")
 
         for x, y, img, name in placements:
             success_canvas.paste(img, (x, y))
 
-        success_path = output_dir / "summary_success.png"
-        success_canvas.save(success_path)
-        print(f"    ✓ Saved: {success_path}")
+        success_path_png = output_dir / "summary_success.png"
+        success_canvas.save(success_path_png)
+        success_path_pdf = output_dir / "summary_success.pdf"
+        success_canvas.save(success_path_pdf, format='PDF')
+        print(f"    ✓ Saved: {success_path_png} and {success_path_pdf}")
     else:
         print(f"  No success cases to display")
 
@@ -919,16 +921,18 @@ def create_summary_canvases(image_results, output_dir, summary_items):
         # For review, use sorted rows (keep order by difference - highest first)
         # Use rectangle_pack but it will maintain order since we pass sorted list
         canvas_width, canvas_height, placements = rectangle_pack(
-            review_images, max_width=2500, padding=15
+            review_images, max_width=3840, padding=25
         )
         review_canvas = Image.new("RGB", (canvas_width, canvas_height), "white")
 
         for x, y, img, name in placements:
             review_canvas.paste(img, (x, y))
 
-        review_path = output_dir / "summary_review.png"
-        review_canvas.save(review_path)
-        print(f"    ✓ Saved: {review_path}")
+        review_path_png = output_dir / "summary_review.png"
+        review_canvas.save(review_path_png)
+        review_path_pdf = output_dir / "summary_review.pdf"
+        review_canvas.save(review_path_pdf, format='PDF')
+        print(f"    ✓ Saved: {review_path_png} and {review_path_pdf}")
     else:
         print(f"  No review cases to display")
 
