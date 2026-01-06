@@ -547,7 +547,6 @@ fn extract_exif_data(image_bytes: &[u8]) -> HashMap<String, serde_json::Value> {
     responses(
         (status = 200, description = "Statistics extracted successfully", body = ImageStatsResponse),
         (status = 400, description = "Bad request (invalid image)", body = crate::ErrorResponse),
-        (status = 503, description = "Image stats feature not available", body = crate::ErrorResponse)
     ),
     tag = "image"
 )]

@@ -2,10 +2,12 @@
 # nomic-serve Makefile
 # ==============================================================================
 
+default: run
+
 .PHONY: model fmt build clean run health docs openapi test test-list test-dim models-all test-models \
         docker-build docker-build-cpu docker-build-gpu docker-push docker-push-cpu docker-push-gpu \
         model-txt model-txt-all model-img model-img-all check-txt check-img check-models \
-        test-img test-img-batch test-multimodal test-img-stats build-stats run-stats
+        test-img test-img-batch test-multimodal test-img-stats run-stats
 
 # ==============================================================================
 # Model Files
@@ -78,16 +80,6 @@ build-cuda: fmt
 	cargo build --release --features cuda
 	@echo "✓ Build complete (with CUDA support)"
 
-# Build with image-stats feature (EXIF + color analysis)
-build-stats: fmt
-	cargo build --release --features image-stats
-	@echo "✓ Build complete (with image-stats feature)"
-
-# Build with both CUDA and image-stats
-build-full: fmt
-	cargo build --release --features "cuda,image-stats"
-	@echo "✓ Build complete (CUDA + image-stats)"
-
 check:
 	@cargo check
 	@echo "✓ Check complete"
@@ -120,14 +112,17 @@ clean-results:
 # Run
 # ==============================================================================
 
-run: build check-txt
+run: build check-models
 	./target/release/nomic-serve
 
 run-full: build check-models
 	./target/release/nomic-serve
 
-# Run with image-stats feature enabled (no model files required)
-run-stats: build-stats
+run-gpu: build-cuda check-models
+	./target/release/nomic-serve
+
+# Run server (image-stats is now always included, no model files required for /img/stats)
+run-stats: build
 	./target/release/nomic-serve
 
 # ==============================================================================

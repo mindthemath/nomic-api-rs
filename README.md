@@ -330,13 +330,13 @@ Workers process texts sequentially but in parallel across the pool.
 ### Files to Deploy
 
 ```
-target/release/nomic-serve       # 39MB binary (includes CPU + GPU support)
+target/release/nomic-serve       # 38MB binary (includes CPU + GPU support + image stats)
 models/txt/model_quantized.onnx  # 131MB text model
 models/txt/tokenizer.json        # 695KB tokenizer
 models/img/model_quantized.onnx  # 93MB vision model
 ```
 
-Total: ~264MB
+Total: ~263MB
 
 **Note**: The binary includes both CPU and GPU support. GPU code adds ~2MB but is only loaded when `USE_GPU=1` is set. For CPU-only deployments, you can build without the `cuda` feature to save 2MB (remove `"cuda"` from `Cargo.toml` features).
 
@@ -378,15 +378,15 @@ docker run --gpus all -p 8080:8080 --dns 1.1.1.1 --dns 1.0.0.1 mindthemath/nomic
 **Note**: The `--dns` flags are recommended for image embedding endpoints (`/img/embed`, `/img/batch`) to ensure fast DNS resolution. Cloudflare DNS (1.1.1.1) is used for privacy and performance. Without DNS configuration, image URL fetching may be slow (10+ seconds) due to Docker's default DNS configuration.
 
 **Image Size** (as shown by `docker images`):
-- **CPU image**: ~359MB
-  - Binary: 39MB
+- **CPU image**: ~358MB
+  - Binary: 38MB
   - Text model files (`model_quantized.onnx` + `tokenizer.json`): 132MB
   - Vision model (`model_quantized.onnx`): 93MB
   - Base image (`debian:bookworm-slim`): 74.8MB
   - Runtime dependencies (ca-certificates, libssl3, dumb-init): 9.2MB
   - Layer compression overhead: ~12MB
 - **GPU image**: ~2.7GB
-  - Binary: 39MB
+  - Binary: 38MB
   - Text model files (`model_quantized.onnx` + `tokenizer.json`): 132MB
   - Vision model (`model_quantized.onnx`): 93MB
   - ONNX Runtime CUDA providers libraries: 196MB

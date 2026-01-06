@@ -10,7 +10,7 @@
 //! - `POST /query`     - Single text with search_query prefix (convenience)
 //! - `POST /img/embed` - Single image embedding
 //! - `POST /img/batch` - Multiple image embeddings
-//! - `POST /img/stats` - Image statistics (EXIF + colors) [requires `image-stats` feature]
+//! - `POST /img/stats` - Image statistics (EXIF + colors)
 //!
 //! ## Why Sequential Processing
 //!
@@ -18,7 +18,6 @@
 //! for the nomic ONNX models because they exhibit cross-sample interference when batched.
 //! See README.md for detailed explanation.
 
-#[cfg(feature = "image-stats")]
 mod image_stats;
 
 use axum::{
@@ -421,6 +420,7 @@ pub struct ErrorResponse {
         txt_query_handler,
         img_embed_handler,
         img_batch_handler,
+        image_stats::img_stats_handler,
     ),
     components(schemas(
         TextEmbedRequest,
@@ -435,6 +435,12 @@ pub struct ErrorResponse {
         HealthResponse,
         ErrorResponse,
         Prefix,
+        image_stats::ImageStatsRequest,
+        image_stats::ImageStatsResponse,
+        image_stats::AveragingMethod,
+        image_stats::ColorData,
+        image_stats::AverageColorInfo,
+        image_stats::ColorInfo,
     ))
 )]
 struct ApiDoc;
@@ -525,13 +531,10 @@ async fn main() {
         "   Text model:   {} /txt/embed, /txt/batch, /txt/query",
         text_status
     );
-    #[cfg(feature = "image-stats")]
     info!(
         "   Vision model: {} /img/embed, /img/batch, /img/stats",
         vision_status
     );
-    #[cfg(not(feature = "image-stats"))]
-    info!("   Vision model: {} /img/embed, /img/batch", vision_status);
     info!("📚 API docs available at http://0.0.0.0:{}/docs", port);
 
     // Build router - base routes
@@ -543,11 +546,8 @@ async fn main() {
         .route("/txt/query", post(txt_query_handler))
         // Image endpoints
         .route("/img/embed", post(img_embed_handler))
-        .route("/img/batch", post(img_batch_handler));
-
-    // Add image stats endpoint if feature is enabled
-    #[cfg(feature = "image-stats")]
-    let app = app.route("/img/stats", post(image_stats::img_stats_handler));
+        .route("/img/batch", post(img_batch_handler))
+        .route("/img/stats", post(image_stats::img_stats_handler));
 
     let mut app = app
         // Legacy aliases (silent, undocumented)
@@ -638,6 +638,7 @@ fn build_cors_layer() -> CorsLayer {
 // HTTP Handlers - Health
 // ============================================================================
 
+/// Check server health and model availability
 #[utoipa::path(
     get,
     path = "/health",
@@ -658,6 +659,7 @@ async fn health_handler(State(state): State<AppState>) -> Json<HealthResponse> {
 // HTTP Handlers - Text
 // ============================================================================
 
+/// Generate a single text embedding with configurable prefix and dimension
 #[utoipa::path(
     post,
     path = "/txt/embed",
@@ -709,6 +711,7 @@ async fn txt_embed_handler(
     }))
 }
 
+/// Generate embeddings for multiple texts with configurable prefix and dimension
 #[utoipa::path(
     post,
     path = "/txt/batch",
@@ -768,6 +771,7 @@ async fn txt_batch_handler(
     }))
 }
 
+/// Generate a text embedding optimized for search queries (uses search_query prefix)
 #[utoipa::path(
     post,
     path = "/txt/query",
@@ -824,6 +828,7 @@ async fn txt_query_handler(
 // HTTP Handlers - Image
 // ============================================================================
 
+/// Generate a single image embedding from URL or base64-encoded image
 #[utoipa::path(
     post,
     path = "/img/embed",
@@ -880,6 +885,7 @@ async fn img_embed_handler(
     }))
 }
 
+/// Generate embeddings for multiple images from URLs or base64-encoded images
 #[utoipa::path(
     post,
     path = "/img/batch",
