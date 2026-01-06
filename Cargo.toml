@@ -1,0 +1,17 @@
+[package]
+name = "nomic-serve"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow        = "1"
+axum          = "0.7"
+ndarray       = "0.15"
+# ort           = "1.16"   # <-- stable
+ort           = { version = "2.0.0-rc.10", features = ["ndarray"] }
+serde         = { version = "1", features = ["derive"] }
+tokenizers    = "0.19"
+tokio         = { version = "1", features = ["full"] }
+tower-http    = { version = "0.5", features = ["trace"] }
+tracing       = "0.1"
+tracing-subscriber = "0.3"
