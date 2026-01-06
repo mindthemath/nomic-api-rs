@@ -177,12 +177,14 @@ Workers process texts sequentially but in parallel across the pool.
 ### Files to Deploy
 
 ```
-target/release/nomic-serve   # 32MB binary
+target/release/nomic-serve   # 34MB binary (includes CPU + GPU support)
 model_quantized.onnx         # 131MB model
 tokenizer.json               # 700KB tokenizer
 ```
 
-Total: ~164MB
+Total: ~166MB
+
+**Note**: The binary includes both CPU and GPU support. GPU code adds ~2MB but is only loaded when `USE_GPU=1` is set. For CPU-only deployments, you can build without the `cuda` feature to save 2MB (remove `"cuda"` from `Cargo.toml` features).
 
 ### Dependencies
 
