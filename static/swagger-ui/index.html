@@ -61,6 +61,43 @@
             font-size: 1.25rem;
             box-shadow: var(--shadow-soft);
             border: 1px solid rgba(255, 255, 255, 0.10);
+            cursor: pointer;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            user-select: none;
+        }
+
+        .header-icon:hover {
+            transform: scale(1.05);
+            box-shadow: 0 12px 24px rgba(45, 212, 191, 0.25);
+            border-color: rgba(255, 255, 255, 0.20);
+        }
+
+        .header-icon:active {
+            transform: scale(0.95);
+        }
+
+        .header-icon .emoji {
+            transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            display: inline-block;
+        }
+
+        .header-icon.emoji-change .emoji {
+            animation: emojiSpin 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        @keyframes emojiSpin {
+            0% {
+                transform: rotate(0deg) scale(1);
+                opacity: 1;
+            }
+            50% {
+                transform: rotate(180deg) scale(0.5);
+                opacity: 0.3;
+            }
+            100% {
+                transform: rotate(360deg) scale(1);
+                opacity: 1;
+            }
         }
 
         .header-text h1 {
@@ -476,7 +513,9 @@
 </head>
 <body>
     <div class="header">
-        <div class="header-icon">⚡</div>
+        <div class="header-icon" id="header-icon">
+            <span class="emoji">🦀</span>
+        </div>
         <div class="header-text">
             <h1>nomic-serve</h1>
             <p>Text embedding API powered by nomic-embed-text-v1.5</p>
@@ -486,6 +525,32 @@
     <div id="swagger-ui"></div>
     <script src="https://unpkg.com/swagger-ui-dist@5.17.14/swagger-ui-bundle.js"></script>
     <script>
+        // Header icon emoji cycling
+        (function() {
+            const headerIcon = document.getElementById('header-icon');
+            const emojiSpan = headerIcon.querySelector('.emoji');
+            const emojis = ['👀', '📄']; // Eyes (vision) and Document (text)
+            let currentIndex = -1; // Start at -1 so first click goes to index 0 (eyeball)
+
+            headerIcon.addEventListener('click', function() {
+                // Cycle to next emoji
+                currentIndex = (currentIndex + 1) % emojis.length;
+                
+                // Add animation class
+                headerIcon.classList.add('emoji-change');
+                
+                // Update emoji after a brief delay for smooth transition
+                setTimeout(() => {
+                    emojiSpan.textContent = emojis[currentIndex];
+                }, 200);
+                
+                // Remove animation class after animation completes
+                setTimeout(() => {
+                    headerIcon.classList.remove('emoji-change');
+                }, 400);
+            });
+        })();
+
         window.onload = () => {
             SwaggerUIBundle({
                 url: '/openapi.json',
