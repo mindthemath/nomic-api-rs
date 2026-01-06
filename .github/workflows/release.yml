@@ -3,7 +3,7 @@ name: Release Artifacts
 on:
   push:
     tags:
-      - 'v*'
+      - 'v202*'
   workflow_dispatch:
 
 jobs:
@@ -36,7 +36,11 @@ jobs:
       VERSION: ${{ github.ref_name }}
     steps:
       - name: Sanitize version
-        run: echo "VERSION=${VERSION//\//-}" >> $GITHUB_ENV
+        run: |
+          # Remove 'v' prefix and sanitize slashes
+          VERSION=${VERSION#v}  # Strip leading 'v' if present
+          VERSION=${VERSION//\//-}  # Replace slashes with hyphens
+          echo "VERSION=${VERSION}" >> $GITHUB_ENV
 
       - name: Checkout
         uses: actions/checkout@v6
@@ -84,15 +88,15 @@ jobs:
       - name: Create tarball
         run: |
           cd release
-          mkdir -p nomic-embed-v1-5-${VERSION}-${{ matrix.artifact }}
-          mv nomic-serve models nomic-embed-v1-5-${VERSION}-${{ matrix.artifact }}/
-          tar -czvf ../nomic-embed-v1-5-${VERSION}-${{ matrix.artifact }}.tar.gz nomic-embed-v1-5-${VERSION}-${{ matrix.artifact }}
+          mkdir -p nomic-embed-v1.5-${VERSION}-${{ matrix.artifact }}
+          mv nomic-serve models nomic-embed-v1.5-${VERSION}-${{ matrix.artifact }}/
+          tar -czvf ../nomic-embed-v1.5-${VERSION}-${{ matrix.artifact }}.tar.gz nomic-embed-v1.5-${VERSION}-${{ matrix.artifact }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: nomic-embed-v1-5-*.tar.gz
+          path: nomic-embed-v1.5-*.tar.gz
 
   build-macos:
     strategy:
@@ -111,7 +115,11 @@ jobs:
       VERSION: ${{ github.ref_name }}
     steps:
       - name: Sanitize version
-        run: echo "VERSION=${VERSION//\//-}" >> $GITHUB_ENV
+        run: |
+          # Remove 'v' prefix and sanitize slashes
+          VERSION=${VERSION#v}  # Strip leading 'v' if present
+          VERSION=${VERSION//\//-}  # Replace slashes with hyphens
+          echo "VERSION=${VERSION}" >> $GITHUB_ENV
 
       - name: Checkout
         uses: actions/checkout@v6
@@ -146,21 +154,21 @@ jobs:
 
       - name: Package artifacts
         run: |
-          mkdir -p release/nomic-embed-v1-5-${VERSION}-${{ matrix.artifact }}
-          cp target/release/nomic-serve release/nomic-embed-v1-5-${VERSION}-${{ matrix.artifact }}/
-          cp -r models release/nomic-embed-v1-5-${VERSION}-${{ matrix.artifact }}/
+          mkdir -p release/nomic-embed-v1.5-${VERSION}-${{ matrix.artifact }}
+          cp target/release/nomic-serve release/nomic-embed-v1.5-${VERSION}-${{ matrix.artifact }}/
+          cp -r models release/nomic-embed-v1.5-${VERSION}-${{ matrix.artifact }}/
           cd release
-          tar -czvf ../nomic-embed-v1-5-${VERSION}-${{ matrix.artifact }}.tar.gz nomic-embed-v1-5-${VERSION}-${{ matrix.artifact }}
+          tar -czvf ../nomic-embed-v1.5-${VERSION}-${{ matrix.artifact }}.tar.gz nomic-embed-v1.5-${VERSION}-${{ matrix.artifact }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: nomic-embed-v1-5-*.tar.gz
+          path: nomic-embed-v1.5-*.tar.gz
 
   release:
     needs: [build-linux, build-macos]
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v202')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -168,7 +176,11 @@ jobs:
       VERSION: ${{ github.ref_name }}
     steps:
       - name: Sanitize version
-        run: echo "VERSION=${VERSION//\//-}" >> $GITHUB_ENV
+        run: |
+          # Remove 'v' prefix and sanitize slashes
+          VERSION=${VERSION#v}  # Strip leading 'v' if present
+          VERSION=${VERSION//\//-}  # Replace slashes with hyphens
+          echo "VERSION=${VERSION}" >> $GITHUB_ENV
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -192,28 +204,28 @@ jobs:
 
             ```bash
             # x86_64 - Quantized (smaller, faster, ~99% quality)
-            tar -xzf nomic-embed-v1-5-${{ env.VERSION }}-linux-x64-quantized.tar.gz
+            tar -xzf nomic-embed-v1.5-${{ env.VERSION }}-linux-x64-quantized.tar.gz
 
             # x86_64 - Full precision (larger, best quality)
-            tar -xzf nomic-embed-v1-5-${{ env.VERSION }}-linux-x64-full.tar.gz
+            tar -xzf nomic-embed-v1.5-${{ env.VERSION }}-linux-x64-full.tar.gz
 
             # ARM64 - Quantized (Raspberry Pi, AWS Graviton, Apple Silicon Linux VMs)
-            tar -xzf nomic-embed-v1-5-${{ env.VERSION }}-linux-arm64-quantized.tar.gz
+            tar -xzf nomic-embed-v1.5-${{ env.VERSION }}-linux-arm64-quantized.tar.gz
 
             # ARM64 - Full precision
-            tar -xzf nomic-embed-v1-5-${{ env.VERSION }}-linux-arm64-full.tar.gz
+            tar -xzf nomic-embed-v1.5-${{ env.VERSION }}-linux-arm64-full.tar.gz
 
             # macOS (Apple Silicon M1/M2/M3) - Quantized
-            tar -xzf nomic-embed-v1-5-${{ env.VERSION }}-macos-arm64-quantized.tar.gz
+            tar -xzf nomic-embed-v1.5-${{ env.VERSION }}-macos-arm64-quantized.tar.gz
 
             # macOS (Apple Silicon M1/M2/M3) - Full precision
-            tar -xzf nomic-embed-v1-5-${{ env.VERSION }}-macos-arm64-full.tar.gz
+            tar -xzf nomic-embed-v1.5-${{ env.VERSION }}-macos-arm64-full.tar.gz
             ```
 
             ## Running
 
             ```bash
-            cd nomic-embed-v1-5-*
+            cd nomic-embed-v1.5-*
             ./nomic-serve
             # Server starts on http://localhost:8080
             ```
