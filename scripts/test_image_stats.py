@@ -79,7 +79,7 @@ def calculate_geometric_mean(valid_pixels):
 
 def rgb_to_hex(rgb_array):
     """Convert RGB array (0-1 range) to hex color code"""
-    r_int, g_int, b_int = [int(c * 255) for c in rgb_array]
+    r_int, g_int, b_int = [round(c * 255) for c in rgb_array]
     return f"#{r_int:02x}{g_int:02x}{b_int:02x}"
 
 
@@ -306,13 +306,13 @@ def run_test(image_url: str, rust_url: str, averaging_method: str = "geometric",
 
 def rgb_to_hex_vis(rgb):
     """Convert RGB [0-1] to hex."""
-    r, g, b = [int(c * 255) for c in rgb]
+    r, g, b = [round(c * 255) for c in rgb]
     return f"#{r:02x}{g:02x}{b:02x}"
 
 
 def create_color_swatch(rgb, size=(200, 100)):
     """Create a color swatch image."""
-    img = Image.new("RGB", size, tuple(int(c * 255) for c in rgb))
+    img = Image.new("RGB", size, tuple(round(c * 255) for c in rgb))
     return img
 
 
