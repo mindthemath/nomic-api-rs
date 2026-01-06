@@ -117,7 +117,7 @@ struct EmbedResponse {
 // ============================================================================
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() {
     tracing_subscriber::fmt::init();
 
     let model_path = std::env::var("MODEL")
@@ -134,7 +134,15 @@ async fn main() -> anyhow::Result<()> {
         .map(|v| v == "1" || v.to_lowercase() == "true")
         .unwrap_or(false);
 
-    let state = AppState::new(model_path, tok_path, use_gpu).await?;
+    let state = match AppState::new(model_path.clone(), tok_path.clone(), use_gpu).await {
+        Ok(state) => state,
+        Err(e) => {
+            eprintln!("Failed to initialize server: {}", e);
+            eprintln!("Model path: {:?}", model_path);
+            eprintln!("Tokenizer path: {:?}", tok_path);
+            std::process::exit(1);
+        }
+    };
     let device = if use_gpu { "GPU" } else { "CPU" };
     info!(
         "🚀 Nomic embedding server ready on http://0.0.0.0:{} ({})",
@@ -147,9 +155,26 @@ async fn main() -> anyhow::Result<()> {
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 
-    let addr: SocketAddr = format!("0.0.0.0:{}", port).parse()?;
-    axum::serve(tokio::net::TcpListener::bind(addr).await?, app).await?;
-    Ok(())
+    let addr: SocketAddr = match format!("0.0.0.0:{}", port).parse() {
+        Ok(addr) => addr,
+        Err(e) => {
+            eprintln!("Failed to parse address: {}", e);
+            std::process::exit(1);
+        }
+    };
+    
+    let listener = match tokio::net::TcpListener::bind(addr).await {
+        Ok(listener) => listener,
+        Err(e) => {
+            eprintln!("Failed to bind to address {}: {}", addr, e);
+            std::process::exit(1);
+        }
+    };
+    
+    if let Err(e) = axum::serve(listener, app).await {
+        eprintln!("Server error: {}", e);
+        std::process::exit(1);
+    }
 }
 
 // ============================================================================

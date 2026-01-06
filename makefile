@@ -2,7 +2,8 @@
 # nomic-serve Makefile
 # ==============================================================================
 
-.PHONY: model fmt build clean run health test test-list models-all test-models
+.PHONY: model fmt build clean run health test test-list models-all test-models \
+        docker-build docker-build-cpu docker-build-gpu docker-push docker-push-cpu docker-push-gpu
 
 # ==============================================================================
 # Model Files
@@ -88,3 +89,44 @@ test-models: build models-all
 test-models-gpu: build models-all
 	@echo "Starting model variant comparison (GPU)..."
 	@USE_GPU=1 bash scripts/run_model_comparison.sh
+
+# ==============================================================================
+# Docker
+# ==============================================================================
+
+DOCKER_IMAGE = mindthemath/nomic-text-v1.5-rs
+DOCKER_TAG ?= latest
+
+# Build both CPU and GPU images
+docker-build: docker-build-cpu docker-build-gpu
+
+# Build CPU-only image
+docker-build-cpu: model
+	@echo "Building CPU Docker image..."
+	docker build --target runtime-cpu -t $(DOCKER_IMAGE):$(DOCKER_TAG)-cpu -t $(DOCKER_IMAGE):latest-cpu .
+
+docker-run-cpu: docker-build-cpu
+	docker run -p 8080:8080 $(DOCKER_IMAGE):$(DOCKER_TAG)-cpu
+
+# Build GPU (CUDA) image
+docker-build-gpu: model
+	@echo "Building GPU Docker image..."
+	docker build --target runtime-gpu -t $(DOCKER_IMAGE):$(DOCKER_TAG)-gpu -t $(DOCKER_IMAGE):latest-gpu .
+
+docker-run-gpu: docker-build-gpu
+	docker run --gpus all -p 8080:8080 $(DOCKER_IMAGE):$(DOCKER_TAG)-gpu
+
+# Push both images
+docker-push: docker-push-cpu docker-push-gpu
+
+# Push CPU image
+docker-push-cpu: docker-build-cpu
+	@echo "Pushing CPU image to DockerHub..."
+	docker push $(DOCKER_IMAGE):$(DOCKER_TAG)-cpu
+	docker push $(DOCKER_IMAGE):latest-cpu
+
+# Push GPU image
+docker-push-gpu: docker-build-gpu
+	@echo "Pushing GPU image to DockerHub..."
+	docker push $(DOCKER_IMAGE):$(DOCKER_TAG)-gpu
+	docker push $(DOCKER_IMAGE):latest-gpu

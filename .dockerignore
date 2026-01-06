@@ -1,0 +1,13 @@
+target/
+.git/
+.github/
+*.md
+makefile
+scripts/
+NOTES
+*.onnx
+!model_quantized.onnx
+# tokenizer.json is needed at runtime - don't ignore it
+.env
+*.log
+

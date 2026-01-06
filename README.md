@@ -194,14 +194,34 @@ Total: ~166MB
 
 ### Docker
 
-```dockerfile
-FROM debian:bookworm-slim
-WORKDIR /app
-COPY target/release/nomic-serve model_quantized.onnx tokenizer.json ./
-ENV PORT=8080
-EXPOSE 8080
-CMD ["./nomic-serve"]
+Multi-stage Dockerfile included. Build and push images:
+
+```bash
+# Build both CPU and GPU images
+make docker-build
+
+# Build specific image
+make docker-build-cpu   # CPU-only (debian:bookworm-slim)
+make docker-build-gpu   # GPU/CUDA (nvidia/cuda:12.1.0-runtime)
+
+# Push to DockerHub (requires docker login)
+make docker-push
 ```
+
+**Images:**
+- `mindthemath/nomic-text-v1.5-rs:latest-cpu` - CPU-only deployment
+- `mindthemath/nomic-text-v1.5-rs:latest-gpu` - GPU/CUDA deployment
+
+**Usage:**
+```bash
+# CPU
+docker run -p 8080:8080 mindthemath/nomic-text-v1.5-rs:latest-cpu
+
+# GPU (requires nvidia-docker)
+docker run --gpus all -p 8080:8080 mindthemath/nomic-text-v1.5-rs:latest-gpu
+```
+
+**GitHub Actions**: Automatically builds and pushes images on tag releases (e.g., `v1.0.0`).
 
 ### Systemd
 

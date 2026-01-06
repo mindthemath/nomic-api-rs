@@ -1,4 +1,28 @@
+# Rust
 target/
+Cargo.lock
+
+# Model files (large, download via makefile)
 *.onnx
-*.json
+model_quantized.onnx
+tokenizer.json
+
+# Logs
+*.log
+/tmp/
+
+# Python
 __pycache__/
+*.pyc
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
