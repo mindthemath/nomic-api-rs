@@ -48,6 +48,11 @@ RUN mkdir -p /build/app/lib && \
 # ============================================================================
 FROM debian:bookworm-slim AS runtime-cpu
 
+# Build arguments for model selection
+# Default to quantized models for smaller image size
+ARG TXT_MODEL_FILE=model_quantized.onnx
+ARG IMG_MODEL_FILE=model_quantized.onnx
+
 # Install runtime dependencies (only standard C libraries)
 # dumb-init handles signals properly (SIGTERM, SIGINT) for graceful shutdown
 RUN apt-get update && apt-get install -y \
@@ -61,19 +66,21 @@ WORKDIR /app
 # Copy binary from builder
 COPY --from=builder /build/target/release/nomic-serve ./
 
-# Copy text model files
-COPY models/txt/model_quantized.onnx models/txt/tokenizer.json models/txt/
+# Copy text model files (using build arg)
+COPY models/txt/${TXT_MODEL_FILE} models/txt/tokenizer.json models/txt/
 
-# Copy vision model files
-COPY models/img/model_quantized.onnx models/img/
+# Copy vision model files (using build arg)
+COPY models/img/${IMG_MODEL_FILE} models/img/
 
 # Default configuration - full multimodal
 # CORS: Set CORS_ORIGINS="https://example.com,https://app.example.com" to customize
 #       Set DISABLE_CORS=1 to allow all origins
 ENV PORT=8080
-ENV TXT_MODEL=models/txt/model_quantized.onnx
 ENV TOKENIZER=models/txt/tokenizer.json
-ENV IMG_MODEL=models/img/model_quantized.onnx
+# Set model paths from build args
+# Note: We need to construct the full path here since ENV can reference ARG
+ENV TXT_MODEL=models/txt/${TXT_MODEL_FILE}
+ENV IMG_MODEL=models/img/${IMG_MODEL_FILE}
 
 EXPOSE 8080
 
@@ -85,6 +92,11 @@ CMD ["./nomic-serve"]
 # Stage 3: GPU Runtime (CUDA)
 # ============================================================================
 FROM nvidia/cuda:12.1.0-runtime-ubuntu22.04 AS runtime-gpu
+
+# Build arguments for model selection
+# Default to quantized models for smaller image size
+ARG TXT_MODEL_FILE=model_quantized.onnx
+ARG IMG_MODEL_FILE=model_quantized.onnx
 
 # Install runtime dependencies
 # dumb-init handles signals properly (SIGTERM, SIGINT) for graceful shutdown
@@ -104,20 +116,21 @@ COPY --from=builder /build/target/release/nomic-serve ./
 # The directory always exists (created in builder stage) so COPY won't fail
 COPY --from=builder /build/app/lib/ /app/lib/
 
-# Copy text model files
-COPY models/txt/model_quantized.onnx models/txt/tokenizer.json models/txt/
+# Copy text model files (using build arg)
+COPY models/txt/${TXT_MODEL_FILE} models/txt/tokenizer.json models/txt/
 
-# Copy vision model files
-COPY models/img/model_quantized.onnx models/img/
+# Copy vision model files (using build arg)
+COPY models/img/${IMG_MODEL_FILE} models/img/
 
 # GPU mode enabled by default
 # Set LD_LIBRARY_PATH to find ONNX Runtime providers
 # CORS: Set CORS_ORIGINS="https://example.com,https://app.example.com" to customize
 #       Set DISABLE_CORS=1 to allow all origins
 ENV PORT=8080
-ENV TXT_MODEL=models/txt/model_quantized.onnx
 ENV TOKENIZER=models/txt/tokenizer.json
-ENV IMG_MODEL=models/img/model_quantized.onnx
+# Set model paths from build args
+ENV TXT_MODEL=models/txt/${TXT_MODEL_FILE}
+ENV IMG_MODEL=models/img/${IMG_MODEL_FILE}
 ENV USE_GPU=1
 ENV LD_LIBRARY_PATH=/app/lib:${LD_LIBRARY_PATH}
 

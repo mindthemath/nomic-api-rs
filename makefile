@@ -187,18 +187,40 @@ DOCKER_TAG ?= latest
 # Build both CPU and GPU images
 docker-build: docker-build-cpu docker-build-gpu
 
-# Build CPU-only image (requires both models)
+# Build CPU-only image (requires both models, defaults to quantized)
 docker-build-cpu: model-txt model-img
-	@echo "Building CPU Docker image..."
-	docker build --target runtime-cpu -t $(DOCKER_IMAGE):$(DOCKER_TAG)-cpu -t $(DOCKER_IMAGE):latest-cpu .
+	@echo "Building CPU Docker image (quantized models)..."
+	docker build --target runtime-cpu \
+		--build-arg TXT_MODEL_FILE=model_quantized.onnx \
+		--build-arg IMG_MODEL_FILE=model_quantized.onnx \
+		-t $(DOCKER_IMAGE):$(DOCKER_TAG)-cpu -t $(DOCKER_IMAGE):latest-cpu .
+
+# Build CPU image with full precision models
+docker-build-cpu-full: model-txt-all model-img-all
+	@echo "Building CPU Docker image (full precision models)..."
+	docker build --target runtime-cpu \
+		--build-arg TXT_MODEL_FILE=model.onnx \
+		--build-arg IMG_MODEL_FILE=model.onnx \
+		-t $(DOCKER_IMAGE):$(DOCKER_TAG)-cpu-full -t $(DOCKER_IMAGE):latest-cpu-full .
 
 docker-run-cpu: docker-build-cpu
 	docker run -p 8080:8080 --dns 1.1.1.1 --dns 1.0.0.1 $(DOCKER_IMAGE):$(DOCKER_TAG)-cpu
 
-# Build GPU (CUDA) image (requires both models)
+# Build GPU (CUDA) image (requires both models, defaults to quantized)
 docker-build-gpu: model-txt model-img
-	@echo "Building GPU Docker image..."
-	docker build --target runtime-gpu -t $(DOCKER_IMAGE):$(DOCKER_TAG)-gpu -t $(DOCKER_IMAGE):latest-gpu .
+	@echo "Building GPU Docker image (quantized models)..."
+	docker build --target runtime-gpu \
+		--build-arg TXT_MODEL_FILE=model_quantized.onnx \
+		--build-arg IMG_MODEL_FILE=model_quantized.onnx \
+		-t $(DOCKER_IMAGE):$(DOCKER_TAG)-gpu -t $(DOCKER_IMAGE):latest-gpu .
+
+# Build GPU image with full precision models
+docker-build-gpu-full: model-txt-all model-img-all
+	@echo "Building GPU Docker image (full precision models)..."
+	docker build --target runtime-gpu \
+		--build-arg TXT_MODEL_FILE=model.onnx \
+		--build-arg IMG_MODEL_FILE=model.onnx \
+		-t $(DOCKER_IMAGE):$(DOCKER_TAG)-gpu-full -t $(DOCKER_IMAGE):latest-gpu-full .
 
 docker-run-gpu: docker-build-gpu
 	docker run --gpus all -p 8080:8080 --dns 1.1.1.1 --dns 1.0.0.1 $(DOCKER_IMAGE):$(DOCKER_TAG)-gpu

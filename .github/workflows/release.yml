@@ -12,11 +12,25 @@ jobs:
       matrix:
         include:
           - platform: linux/amd64
-            artifact: linux-x64
+            artifact: linux-x64-quantized
             runner: ubuntu-latest
-        #   - platform: linux/arm64
-        #     artifact: linux-arm64
-        #     runner: ubuntu-24.04-arm
+            txt_model: model_quantized.onnx
+            img_model: model_quantized.onnx
+          - platform: linux/amd64
+            artifact: linux-x64-full
+            runner: ubuntu-latest
+            txt_model: model.onnx
+            img_model: model.onnx
+          - platform: linux/arm64
+            artifact: linux-arm64-quantized
+            runner: ubuntu-24.04-arm
+            txt_model: model_quantized.onnx
+            img_model: model_quantized.onnx
+          - platform: linux/arm64
+            artifact: linux-arm64-full
+            runner: ubuntu-24.04-arm
+            txt_model: model.onnx
+            img_model: model.onnx
     runs-on: ${{ matrix.runner }}
     env:
       VERSION: ${{ github.ref_name }}
@@ -27,34 +41,23 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Download model files
+      - name: Download model files (using makefile)
         run: |
-          # Text model (nomic-embed-text-v1.5)
-          mkdir -p models/txt
-          wget --content-disposition -q \
-            -O models/txt/tokenizer.json \
-            https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/resolve/main/tokenizer.json
-          wget --content-disposition -q \
-            -O models/txt/model_quantized.onnx \
-            https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/resolve/main/onnx/model_quantized.onnx
-          
-          # Vision model (nomic-embed-vision-v1.5)
-          mkdir -p models/img
-          wget --content-disposition -q \
-            -O models/img/model_quantized.onnx \
-            https://huggingface.co/nomic-ai/nomic-embed-vision-v1.5/resolve/main/onnx/model_quantized.onnx
+          # Download all model variants (makefile handles this)
+          make model-txt-all model-img-all
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build image for ${{ matrix.platform }}
+      - name: Build image (using makefile)
         run: |
-          docker buildx build \
-            --platform ${{ matrix.platform }} \
-            --target runtime-cpu \
-            --load \
-            -t nomic-embed-v1-5:${{ matrix.artifact }} \
-            .
+          # Use makefile targets directly - both platforms use native docker build (no buildx needed)
+          if [[ "${{ matrix.txt_model }}" == "model_quantized.onnx" ]]; then
+            make docker-build-cpu
+            # Retag to match artifact name (makefile creates mindthemath/nomic-embed-v1.5-rs:latest-cpu)
+            docker tag mindthemath/nomic-embed-v1.5-rs:latest-cpu nomic-embed-v1-5:${{ matrix.artifact }}
+          else
+            make docker-build-cpu-full
+            # Retag to match artifact name (makefile creates mindthemath/nomic-embed-v1.5-rs:latest-cpu-full)
+            docker tag mindthemath/nomic-embed-v1.5-rs:latest-cpu-full nomic-embed-v1-5:${{ matrix.artifact }}
+          fi
 
       - name: Extract artifacts
         run: |
@@ -107,14 +110,20 @@ jobs:
 
             ## Installation
 
-            Download the tarball for your architecture and extract:
+            Download the tarball for your architecture and model variant:
 
             ```bash
-            # For x86_64
-            tar -xzf nomic-embed-v1-5-${{ env.VERSION }}-linux-x64.tar.gz
+            # x86_64 - Quantized (smaller, faster, ~99% quality)
+            tar -xzf nomic-embed-v1-5-${{ env.VERSION }}-linux-x64-quantized.tar.gz
 
-            # For ARM64 (Raspberry Pi, AWS Graviton, Apple Silicon Linux VMs, etc.)
-            tar -xzf nomic-embed-v1-5-${{ env.VERSION }}-linux-arm64.tar.gz
+            # x86_64 - Full precision (larger, best quality)
+            tar -xzf nomic-embed-v1-5-${{ env.VERSION }}-linux-x64-full.tar.gz
+
+            # ARM64 - Quantized (Raspberry Pi, AWS Graviton, Apple Silicon Linux VMs)
+            tar -xzf nomic-embed-v1-5-${{ env.VERSION }}-linux-arm64-quantized.tar.gz
+
+            # ARM64 - Full precision
+            tar -xzf nomic-embed-v1-5-${{ env.VERSION }}-linux-arm64-full.tar.gz
             ```
 
             ## Running
@@ -138,9 +147,13 @@ jobs:
             ## Environment Variables
 
             - `PORT` - Server port (default: 8080)
-            - `TXT_MODEL` - Path to text ONNX model (default: models/txt/model_quantized.onnx)
+            - `TXT_MODEL` - Path to text ONNX model (default depends on variant: `model_quantized.onnx` or `model.onnx`)
             - `TOKENIZER` - Path to tokenizer file (default: models/txt/tokenizer.json)
-            - `IMG_MODEL` - Path to vision ONNX model (default: models/img/model_quantized.onnx)
+            - `IMG_MODEL` - Path to vision ONNX model (default depends on variant: `model_quantized.onnx` or `model.onnx`)
             - `USE_GPU` - Set to 1 to enable GPU (requires CUDA drivers)
+
+            **Model Variants:**
+            - **Quantized** (`*-quantized.tar.gz`): Smaller files, faster inference, ~99% quality. Recommended for most use cases.
+            - **Full** (`*-full.tar.gz`): Larger files, best quality (fp32 precision). Use for maximum accuracy.
             
             **Note**: This release includes CPU-only runtime. For GPU support, use the Docker images (`mindthemath/nomic-embed-v1.5-rs:*-gpu`) or manually install CUDA libraries.
