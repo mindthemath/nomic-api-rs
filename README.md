@@ -89,8 +89,8 @@ OpenAPI 3.1.0 schema.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PORT` | `8080` | Server port |
-| `MODEL` | `models/model_quantized.onnx` | Path to ONNX model |
-| `TOKENIZER` | `models/tokenizer.json` | Path to tokenizer |
+| `MODEL` | `models/txt/model_quantized.onnx` | Path to ONNX model |
+| `TOKENIZER` | `models/txt/tokenizer.json` | Path to tokenizer |
 | `USE_GPU` | `false` | Enable GPU inference (`1` or `true`) |
 | `DISABLE_CORS` | `false` | Disable CORS entirely (`1` or `true`) |
 | `CORS_ORIGINS` | *(see below)* | Comma-separated list of allowed origins |
@@ -278,9 +278,9 @@ Workers process texts sequentially but in parallel across the pool.
 ### Files to Deploy
 
 ```
-target/release/nomic-serve   # 34MB binary (includes CPU + GPU support)
-models/model_quantized.onnx  # 131MB model
-models/tokenizer.json        # 700KB tokenizer
+target/release/nomic-serve       # 34MB binary (includes CPU + GPU support)
+models/txt/model_quantized.onnx  # 131MB model
+models/txt/tokenizer.json        # 700KB tokenizer
 ```
 
 Total: ~166MB

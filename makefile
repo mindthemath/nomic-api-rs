@@ -3,47 +3,33 @@
 # ==============================================================================
 
 .PHONY: model fmt build clean run health docs openapi test test-list test-dim models-all test-models \
-        docker-build docker-build-cpu docker-build-gpu docker-push docker-push-cpu docker-push-gpu
+        docker-build docker-build-cpu docker-build-gpu docker-push docker-push-cpu docker-push-gpu \
+        model-txt model-txt-all model-img model-img-all models-migrate
 
 # ==============================================================================
 # Model Files
 # ==============================================================================
 
-models/tokenizer.json:
-	@mkdir -p models
-	wget --content-disposition -q \
-		-O models/tokenizer.json \
-		https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/resolve/main/tokenizer.json
+# Text model (nomic-embed-text-v1.5)
+model-txt:
+	@bash scripts/download_text_models.sh
 
-models/model_quantized.onnx:
-	@mkdir -p models
-	wget --content-disposition -q \
-		-O models/model_quantized.onnx \
-		https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/resolve/main/onnx/model_quantized.onnx
+model-txt-all:
+	@bash scripts/download_text_models.sh all
 
-models/model_q4f16.onnx:
-	@mkdir -p models
-	wget --content-disposition -q \
-		-O models/model_q4f16.onnx \
-		https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/resolve/main/onnx/model_q4f16.onnx
+# Vision model (nomic-embed-vision-v1.5)
+model-img:
+	@bash scripts/download_vision_models.sh
 
-models/model_fp16.onnx:
-	@mkdir -p models
-	wget --content-disposition -q \
-		-O models/model_fp16.onnx \
-		https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/resolve/main/onnx/model_fp16.onnx
+model-img-all:
+	@bash scripts/download_vision_models.sh all
 
-models/model.onnx:
-	@mkdir -p models
-	wget --content-disposition -q \
-		-O models/model.onnx \
-		https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/resolve/main/onnx/model.onnx
-
-model: models/tokenizer.json models/model_quantized.onnx
+# Default: download text model (backward compatibility)
+model: model-txt
 	@echo "✓ Model files ready"
 
 # Download all model variants for comparison
-models-all: models/tokenizer.json models/model_quantized.onnx models/model_q4f16.onnx models/model_fp16.onnx models/model.onnx
+models-all: model-txt-all model-img-all
 	@echo "✓ All model variants downloaded"
 
 # ==============================================================================
@@ -104,13 +90,13 @@ test-dim:
 
 # Compare all model variants against baseline (model.onnx, fp32)
 # Requires: models-all, build, and Python requests library
-test-models: build models-all
+test-models: build model-txt-all
 	@echo "Starting model variant comparison (CPU)..."
 	@USE_GPU=0 bash scripts/run_model_comparison.sh
 
 # Compare all model variants on GPU
 # Requires: models-all, build, CUDA drivers, and Python requests library
-test-models-gpu: build models-all
+test-models-gpu: build model-txt-all
 	@echo "Starting model variant comparison (GPU)..."
 	@USE_GPU=1 bash scripts/run_model_comparison.sh
 

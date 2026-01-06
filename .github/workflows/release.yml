@@ -29,12 +29,12 @@ jobs:
 
       - name: Download model files
         run: |
-          mkdir -p models
+          mkdir -p models/txt
           wget --content-disposition -q \
-            -O models/tokenizer.json \
+            -O models/txt/tokenizer.json \
             https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/resolve/main/tokenizer.json
           wget --content-disposition -q \
-            -O models/model_quantized.onnx \
+            -O models/txt/model_quantized.onnx \
             https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/resolve/main/onnx/model_quantized.onnx
 
       - name: Set up Docker Buildx
@@ -118,7 +118,7 @@ jobs:
 
             Optionally set environment variables:
             - `PORT` - Server port (default: 8080)
-            - `MODEL` - Path to ONNX model file (default: models/model_quantized.onnx)
-            - `TOKENIZER` - Path to tokenizer file (default: models/tokenizer.json)
+            - `MODEL` - Path to ONNX model file (default: models/txt/model_quantized.onnx)
+            - `TOKENIZER` - Path to tokenizer file (default: models/txt/tokenizer.json)
             - `USE_GPU` - Set to 1 to enable GPU (requires CUDA libraries in lib/)
             - `LD_LIBRARY_PATH` - Add lib/ to this for GPU support (e.g., `export LD_LIBRARY_PATH=./lib:$LD_LIBRARY_PATH`)

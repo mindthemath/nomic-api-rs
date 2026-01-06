@@ -265,10 +265,10 @@ async fn main() {
 
     let model_path = std::env::var("MODEL")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("models/model_quantized.onnx"));
+        .unwrap_or_else(|_| PathBuf::from("models/txt/model_quantized.onnx"));
     let tok_path = std::env::var("TOKENIZER")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("models/tokenizer.json"));
+        .unwrap_or_else(|_| PathBuf::from("models/txt/tokenizer.json"));
     let port: u16 = std::env::var("PORT")
         .ok()
         .and_then(|p| p.parse().ok())

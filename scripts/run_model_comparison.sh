@@ -81,10 +81,10 @@ fi
 # Model configurations: (port, model_file, name)
 # Baseline is fp32 (full precision, unquantized)
 declare -a MODELS=(
-    "8080:models/model.onnx:fp32 (baseline)"
-    "8081:models/model_quantized.onnx:quantized"
-    "8082:models/model_q4f16.onnx:q4f16"
-    "8083:models/model_fp16.onnx:fp16"
+    "8080:models/txt/model.onnx:fp32 (baseline)"
+    "8081:models/txt/model_quantized.onnx:quantized"
+    "8082:models/txt/model_q4f16.onnx:q4f16"
+    "8083:models/txt/model_fp16.onnx:fp16"
 )
 
 # Track PIDs for cleanup
@@ -125,9 +125,9 @@ for model_config in "${MODELS[@]}"; do
     # Start server in background with optional GPU flag
     # LD_LIBRARY_PATH is already exported if GPU mode is enabled
     if [[ -n "$GPU_ENV" ]]; then
-        env $GPU_ENV MODEL="$model_file" TOKENIZER="models/tokenizer.json" PORT="$port" "$BINARY" > "/tmp/nomic-serve-$port.log" 2>&1 &
+        env $GPU_ENV MODEL="$model_file" TOKENIZER="models/txt/tokenizer.json" PORT="$port" "$BINARY" > "/tmp/nomic-serve-$port.log" 2>&1 &
     else
-        env MODEL="$model_file" TOKENIZER="models/tokenizer.json" PORT="$port" "$BINARY" > "/tmp/nomic-serve-$port.log" 2>&1 &
+        env MODEL="$model_file" TOKENIZER="models/txt/tokenizer.json" PORT="$port" "$BINARY" > "/tmp/nomic-serve-$port.log" 2>&1 &
     fi
     pid=$!
     PIDS+=("$pid")
@@ -163,9 +163,9 @@ done
 # Run comparisons
 echo -e "\n${GREEN}Running model comparisons...${NC}"
 if [[ -n "$GPU_ENV" ]]; then
-    echo "Baseline: models/model.onnx (fp32, full precision, port 8080) [GPU]"
+    echo "Baseline: models/txt/model.onnx (fp32, full precision, port 8080) [GPU]"
 else
-    echo "Baseline: models/model.onnx (fp32, full precision, port 8080) [CPU]"
+    echo "Baseline: models/txt/model.onnx (fp32, full precision, port 8080) [CPU]"
 fi
 echo ""
 
