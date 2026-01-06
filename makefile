@@ -70,10 +70,10 @@ test:
 	@curl -s -X POST localhost:8080/embed \
 		-H 'content-type: application/json' \
 		-d '{"inputs": "ONNX in Rust is fast"}' | \
-		jq '{tokens: .tokens[0], time_ms: (.time_ms | floor), dims: (.embeddings[0] | length), sample: (.embeddings[0][0:5] | map(. * 1000 | floor / 1000))}'
+		jq '{tokens: .tokens, time_ms: (.time_ms | floor), dims: (.embedding | length), sample: (.embedding[0:5] | map(. * 1000 | floor / 1000))}'
 
 test-list:
-	@curl -s -X POST localhost:8080/embed \
+	@curl -s -X POST localhost:8080/batch \
 		-H 'content-type: application/json' \
 		-d '{"inputs": ["ONNX in Rust is fast", "Python is also great", "Embeddings are useful"]}' | \
 		jq '{count: (.embeddings | length), tokens, time_ms: (.time_ms | floor), samples: [.embeddings[] | .[0:3] | map(. * 1000 | floor / 1000)]}'

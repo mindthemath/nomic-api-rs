@@ -99,14 +99,24 @@ impl AppState {
 // ============================================================================
 
 #[derive(Deserialize)]
-#[serde(untagged)]
-enum EmbedRequest {
-    Single { inputs: String },
-    Multiple { inputs: Vec<String> },
+struct EmbedRequest {
+    inputs: String,
+}
+
+#[derive(Deserialize)]
+struct BatchRequest {
+    inputs: Vec<String>,
 }
 
 #[derive(Serialize)]
 struct EmbedResponse {
+    embedding: Vec<f32>,
+    tokens: usize,
+    time_ms: f64,
+}
+
+#[derive(Serialize)]
+struct BatchResponse {
     embeddings: Vec<Vec<f32>>,
     tokens: Vec<usize>,
     time_ms: f64,
@@ -152,6 +162,7 @@ async fn main() {
     let app = Router::new()
         .route("/health", get(health_handler))
         .route("/embed", post(embed_handler))
+        .route("/batch", post(batch_handler))
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 
@@ -162,7 +173,7 @@ async fn main() {
             std::process::exit(1);
         }
     };
-    
+
     let listener = match tokio::net::TcpListener::bind(addr).await {
         Ok(listener) => listener,
         Err(e) => {
@@ -170,7 +181,7 @@ async fn main() {
             std::process::exit(1);
         }
     };
-    
+
     if let Err(e) = axum::serve(listener, app).await {
         eprintln!("Server error: {}", e);
         std::process::exit(1);
@@ -191,23 +202,34 @@ async fn embed_handler(
 ) -> Result<Json<EmbedResponse>, Error> {
     let start = Instant::now();
 
-    let texts = match req {
-        EmbedRequest::Single { inputs } => vec![inputs],
-        EmbedRequest::Multiple { inputs } => inputs,
-    };
+    // Process single text
+    let (embedding, tokens) = embed_single(&state, &req.inputs)?;
+
+    Ok(Json(EmbedResponse {
+        embedding,
+        tokens,
+        time_ms: start.elapsed().as_secs_f64() * 1000.0,
+    }))
+}
+
+async fn batch_handler(
+    State(state): State<AppState>,
+    Json(req): Json<BatchRequest>,
+) -> Result<Json<BatchResponse>, Error> {
+    let start = Instant::now();
 
     // Process each text individually - batching causes cross-sample interference
     // with this model (see README.md for explanation)
-    let mut embeddings = Vec::with_capacity(texts.len());
-    let mut tokens = Vec::with_capacity(texts.len());
+    let mut embeddings = Vec::with_capacity(req.inputs.len());
+    let mut tokens = Vec::with_capacity(req.inputs.len());
 
-    for text in &texts {
+    for text in &req.inputs {
         let (emb, tok) = embed_single(&state, text)?;
         embeddings.push(emb);
         tokens.push(tok);
     }
 
-    Ok(Json(EmbedResponse {
+    Ok(Json(BatchResponse {
         embeddings,
         tokens,
         time_ms: start.elapsed().as_secs_f64() * 1000.0,
