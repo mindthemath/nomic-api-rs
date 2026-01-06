@@ -5,7 +5,7 @@
 .PHONY: model fmt build clean run health docs openapi test test-list test-dim models-all test-models \
         docker-build docker-build-cpu docker-build-gpu docker-push docker-push-cpu docker-push-gpu \
         model-txt model-txt-all model-img model-img-all check-txt check-img check-models \
-        test-img test-img-batch test-multimodal
+        test-img test-img-batch test-multimodal test-img-stats build-stats run-stats
 
 # ==============================================================================
 # Model Files
@@ -78,6 +78,16 @@ build-cuda: fmt
 	cargo build --release --features cuda
 	@echo "✓ Build complete (with CUDA support)"
 
+# Build with image-stats feature (EXIF + color analysis)
+build-stats: fmt
+	cargo build --release --features image-stats
+	@echo "✓ Build complete (with image-stats feature)"
+
+# Build with both CUDA and image-stats
+build-full: fmt
+	cargo build --release --features "cuda,image-stats"
+	@echo "✓ Build complete (CUDA + image-stats)"
+
 check:
 	@cargo check
 	@echo "✓ Check complete"
@@ -93,6 +103,10 @@ run: build check-txt
 	./target/release/nomic-serve
 
 run-full: build check-models
+	./target/release/nomic-serve
+
+# Run with image-stats feature enabled (no model files required)
+run-stats: build-stats
 	./target/release/nomic-serve
 
 # ==============================================================================
@@ -155,6 +169,26 @@ test-img-batch:
 		-d '{"contents": ["https://picsum.photos/400/300", "https://picsum.photos/300/400"]}' | \
 		jq '{count: (.embeddings | length), time_ms: (.time_ms | floor), samples: [.embeddings[] | .[0:3] | map(. * 1000 | floor / 1000)]}'
 
+# Test image stats endpoint (requires image-stats feature)
+test-img-stats:
+	@echo "Testing /img/stats with URL (geometric mean)..."
+	@curl -s -X POST localhost:8080/img/stats \
+		-H 'content-type: application/json' \
+		-d '{"content": "https://picsum.photos/400/300", "averaging_method": "geometric"}' | \
+		jq '{time_ms: (.time_ms | floor), exif_fields: (.exif_data | keys | length), avg_color: .color_data.avg_color, dominant_color: .color_data.dominant_color}'
+
+test-img-stats-arithmetic:
+	@echo "Testing /img/stats with arithmetic mean..."
+	@curl -s -X POST localhost:8080/img/stats \
+		-H 'content-type: application/json' \
+		-d '{"content": "https://picsum.photos/400/300", "averaging_method": "arithmetic"}' | \
+		jq '{time_ms: (.time_ms | floor), avg_color: .color_data.avg_color, dominant_color: .color_data.dominant_color}'
+
+# Validate Rust image-stats against Python reference
+test-img-stats-validate:
+	@echo "Validating Rust /img/stats against Python reference..."
+	@cd scripts && python3 test_image_stats.py --rust-url http://localhost:8080
+
 # ==============================================================================
 # Test - Multimodal
 # ==============================================================================
@@ -207,7 +241,7 @@ docker-build-cpu: model-txt model-img
 		-t $(DOCKER_IMAGE):$(DOCKER_TAG)-cpu -t $(DOCKER_IMAGE):latest-cpu .
 
 # Build CPU image with full precision models
-docker-build-cpu-full: model-txt-all model-img-all
+docker-build-cpu-full: model-txt model-img
 	@echo "Building CPU Docker image (full precision models)..."
 	docker build --target runtime-cpu \
 		--build-arg TXT_MODEL_FILE=model.onnx \
@@ -226,7 +260,7 @@ docker-build-gpu: model-txt model-img
 		-t $(DOCKER_IMAGE):$(DOCKER_TAG)-gpu -t $(DOCKER_IMAGE):latest-gpu .
 
 # Build GPU image with full precision models
-docker-build-gpu-full: model-txt-all model-img-all
+docker-build-gpu-full: model-txt model-img
 	@echo "Building GPU Docker image (full precision models)..."
 	docker build --target runtime-gpu \
 		--build-arg TXT_MODEL_FILE=model.onnx \

@@ -10,12 +10,16 @@
 //! - `POST /query`     - Single text with search_query prefix (convenience)
 //! - `POST /img/embed` - Single image embedding
 //! - `POST /img/batch` - Multiple image embeddings
+//! - `POST /img/stats` - Image statistics (EXIF + colors) [requires `image-stats` feature]
 //!
 //! ## Why Sequential Processing
 //!
 //! This server processes each text/image individually rather than batching. This is **required**
 //! for the nomic ONNX models because they exhibit cross-sample interference when batched.
 //! See README.md for detailed explanation.
+
+#[cfg(feature = "image-stats")]
+mod image_stats;
 
 use axum::{
     extract::State,
@@ -100,7 +104,7 @@ const IMAGE_STD: [f32; 3] = [0.26862954, 0.26130258, 0.27577711];
 // ============================================================================
 
 #[derive(Debug)]
-struct Error(StatusCode, String);
+pub struct Error(pub StatusCode, pub String);
 
 impl From<OrtError> for Error {
     fn from(e: OrtError) -> Self {
@@ -137,7 +141,7 @@ struct VisionState {
 
 /// Combined application state
 #[derive(Clone)]
-struct AppState {
+pub struct AppState {
     text: Option<Arc<TextState>>,
     vision: Option<Arc<VisionState>>,
 }
@@ -374,7 +378,7 @@ struct ImageBatchResponse {
 // Common Types
 // ============================================================================
 
-fn default_dim() -> usize {
+pub fn default_dim() -> usize {
     768
 }
 
@@ -392,10 +396,10 @@ struct HealthResponse {
 }
 
 #[derive(Serialize, ToSchema)]
-struct ErrorResponse {
+pub struct ErrorResponse {
     /// Error message
     #[schema(example = "Tokenization failed")]
-    error: String,
+    pub error: String,
 }
 
 // ============================================================================
@@ -521,11 +525,17 @@ async fn main() {
         "   Text model:   {} /txt/embed, /txt/batch, /txt/query",
         text_status
     );
+    #[cfg(feature = "image-stats")]
+    info!(
+        "   Vision model: {} /img/embed, /img/batch, /img/stats",
+        vision_status
+    );
+    #[cfg(not(feature = "image-stats"))]
     info!("   Vision model: {} /img/embed, /img/batch", vision_status);
     info!("📚 API docs available at http://0.0.0.0:{}/docs", port);
 
-    // Build router
-    let mut app = Router::new()
+    // Build router - base routes
+    let app = Router::new()
         .route("/health", get(health_handler))
         // Text endpoints (canonical)
         .route("/txt/embed", post(txt_embed_handler))
@@ -533,7 +543,13 @@ async fn main() {
         .route("/txt/query", post(txt_query_handler))
         // Image endpoints
         .route("/img/embed", post(img_embed_handler))
-        .route("/img/batch", post(img_batch_handler))
+        .route("/img/batch", post(img_batch_handler));
+
+    // Add image stats endpoint if feature is enabled
+    #[cfg(feature = "image-stats")]
+    let app = app.route("/img/stats", post(image_stats::img_stats_handler));
+
+    let mut app = app
         // Legacy aliases (silent, undocumented)
         .route("/embed", post(txt_embed_handler))
         .route("/batch", post(txt_batch_handler))
