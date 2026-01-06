@@ -150,7 +150,7 @@ impl std::fmt::Display for Prefix {
 struct EmbedRequest {
     /// Text to embed
     #[schema(example = "ONNX in Rust is fast")]
-    inputs: String,
+    input: String,
     /// Embedding dimension (1-768). Supports Matryoshka embeddings - truncate to smaller dims for faster similarity search.
     /// Defaults to 768 (full dimension).
     #[serde(default = "default_dim")]
@@ -158,7 +158,7 @@ struct EmbedRequest {
     dim: usize,
     /// Prefix to prepend to the input text. Must be one of: "search_query", "search_document", "classification", "clustering".
     /// Defaults to "search_query". The prefix will be prepended as "{prefix}: {text}".
-    /// Example: with prefix="search_query" and inputs="hello world", the model receives "search_query: hello world".
+    /// Example: with prefix="search_query" and input="hello world", the model receives "search_query: hello world".
     #[serde(default)]
     #[schema(example = "search_query")]
     prefix: Prefix,
@@ -436,7 +436,7 @@ async fn embed_handler(
     }
 
     // Prepend prefix to text
-    let prefixed_text = prepend_prefix(&req.prefix, &req.inputs);
+    let prefixed_text = prepend_prefix(&req.prefix, &req.input);
 
     // Process single text
     let (mut embedding, tokens) = embed_single(&state, &prefixed_text)?;

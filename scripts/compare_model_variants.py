@@ -55,7 +55,7 @@ def get_embedding(port: int, text: str) -> Tuple[List[float], float]:
     start = time.time()
     response = requests.post(
         f"http://localhost:{port}/embed",
-        json={"inputs": text},
+        json={"input": text},
         headers={"content-type": "application/json"},
         timeout=30,
     )

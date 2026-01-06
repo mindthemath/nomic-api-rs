@@ -17,7 +17,7 @@ make run
 # Test
 curl -X POST localhost:8080/embed \
   -H 'content-type: application/json' \
-  -d '{"inputs": "Hello world"}'
+  -d '{"input": "Hello world"}'
 ```
 
 ## API
@@ -37,10 +37,10 @@ Generate embedding for a single text.
 
 **Request:**
 ```json
-{"inputs": "Hello world", "dim": 768}
+{"input": "Hello world", "dim": 768}
 ```
 
-- `inputs` (required): Text to embed
+- `input` (required): Text to embed
 - `dim` (optional): Embedding dimension (1-768). Defaults to 768. Supports [Matryoshka embeddings](https://huggingface.co/blog/matryoshka) - use smaller dimensions for faster similarity search.
 
 **Response:**
@@ -54,7 +54,7 @@ Generate embedding for a single text.
 
 **Example with reduced dimension:**
 ```json
-{"inputs": "Hello world", "dim": 128}
+{"input": "Hello world", "dim": 128}
 ```
 Returns a 128-dimensional embedding (faster similarity search, slightly lower quality).
 
@@ -147,12 +147,12 @@ The nomic-embed-text-v1.5 model supports **Matryoshka embeddings** - variable-di
 # Full dimension (default)
 curl -X POST localhost:8080/embed \
   -H 'content-type: application/json' \
-  -d '{"inputs": "Hello world"}'
+  -d '{"input": "Hello world"}'
 
 # Reduced dimension for faster search
 curl -X POST localhost:8080/embed \
   -H 'content-type: application/json' \
-  -d '{"inputs": "Hello world", "dim": 128}'
+  -d '{"input": "Hello world", "dim": 128}'
 ```
 
 **Important:** All embeddings in a batch use the same `dim` value. For consistent similarity search, always use the same `dim` for all embeddings you compare.

@@ -86,7 +86,7 @@ openapi:
 test:
 	@curl -s -X POST localhost:8080/embed \
 		-H 'content-type: application/json' \
-		-d '{"inputs": "ONNX in Rust is fast"}' | \
+		-d '{"input": "ONNX in Rust is fast"}' | \
 		jq '{tokens: .tokens, time_ms: (.time_ms | floor), sample: (.embedding[0:5] | map(. * 1000 | floor / 1000))}'
 
 test-list:
@@ -99,7 +99,7 @@ test-dim:
 	@echo "Testing Matryoshka embeddings (dim=128)..."
 	@curl -s -X POST localhost:8080/embed \
 		-H 'content-type: application/json' \
-		-d '{"inputs": "ONNX in Rust is fast", "dim": 128}' | \
+		-d '{"input": "ONNX in Rust is fast", "dim": 128}' | \
 		jq '{tokens: .tokens, time_ms: (.time_ms | floor), sample: (.embedding[0:5] | map(. * 1000 | floor / 1000))}'
 
 # Compare all model variants against baseline (model.onnx, fp32)
