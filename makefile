@@ -9,6 +9,16 @@ tokenizer.json:
 model_quantized.onnx:
 	wget --content-disposition https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/resolve/main/onnx/model_quantized.onnx
 
+model_q4f16.onnx:
+	wget --content-disposition https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/resolve/main/onnx/model_q4f16.onnx
+
+model_fp16.onnx:
+	wget --content-disposition https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/resolve/main/onnx/model_fp16.onnx
+
+model.onnx:
+	wget --content-disposition https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/resolve/main/onnx/model.onnx
+
+
 # ==============================================================================
 # Build
 # ==============================================================================

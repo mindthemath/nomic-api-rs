@@ -35,11 +35,15 @@ use tracing::info;
 /// Set via the `BATCH_MODE` environment variable:
 /// - `NO_BATCH` (default): Sequential processing, one text at a time
 /// - `SAFE_BATCH`: Same as NO_BATCH (guaranteed identical results)
-/// - `PAD_BATCH`: Full batching with padding (fastest, but slightly different results)
+/// - `PAD_BATCH`: Full batching with padding (fastest, but ~0.5 embedding differences)
 ///
-/// Note: True batched inference (even without padding) produces slightly different
-/// results than sequential processing due to ONNX runtime/model internals.
-/// SAFE_BATCH exists as a "safe" option that guarantees identical results to NO_BATCH.
+/// IMPORTANT: This Nomic model has cross-sample computation - when multiple texts
+/// are batched together, each text's embedding is affected by OTHER texts in the batch.
+/// This happens even without padding (same token counts). Verified:
+/// - Same text batched with itself: identical (diff ≈ 0)
+/// - Same text batched with any different text: significant diff (~0.5)
+///
+/// Therefore SAFE_BATCH = NO_BATCH is the ONLY correct implementation for exact results.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BatchMode {
     /// Process each text individually in a loop.
@@ -325,13 +329,15 @@ fn embed_sequential(
     Ok((embeddings, tokens))
 }
 
-/// EXPERIMENTAL: Group texts by token count, batch within groups.
+/// UNUSED: Group texts by token count, batch within groups.
 ///
-/// NOTE: This was intended to produce identical results to sequential processing
-/// since texts within a group have the same length (no padding). However, testing
-/// showed that ONNX batched inference produces slightly different results even
-/// without padding, likely due to numerical precision differences in batched
-/// matrix operations. This function is kept for future investigation.
+/// This was intended to provide batching without padding for texts of equal length.
+/// However, testing proved the Nomic model has cross-sample computation:
+/// batching ANY different texts together changes embeddings by ~0.5, regardless
+/// of padding. This is a model property (likely batch normalization or similar).
+///
+/// Kept for reference - demonstrates the approach that WOULD work for models
+/// without cross-sample effects.
 #[allow(dead_code)]
 fn embed_grouped_batch(
     state: &AppState,

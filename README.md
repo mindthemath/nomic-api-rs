@@ -84,11 +84,11 @@ BATCH_MODE=NO_BATCH ./target/release/nomic-serve
 ```bash
 BATCH_MODE=SAFE_BATCH ./target/release/nomic-serve
 ```
-- Currently **identical to NO_BATCH** (sequential processing)
+- **Identical to NO_BATCH** (sequential processing)
 - **Exact same results** as NO_BATCH (guaranteed)
-- Best for: when you want the option to enable batching later without code changes
+- Best for: API compatibility / future-proofing
 
-> **Note**: SAFE_BATCH was intended to group texts by token count and batch within groups (no padding needed). However, testing revealed that ONNX batched inference produces slightly different results even without padding, due to numerical precision differences in batched matrix operations. For now, SAFE_BATCH uses sequential processing to guarantee identical results.
+> **Why not true batching?** Testing proved that this model has cross-sample computation - batching ANY different texts together (even without padding) changes all embeddings by ~0.5. This is a model property, not fixable in code. Sequential processing is the only way to get exact reproducibility.
 
 ### `PAD_BATCH`
 ```bash
@@ -101,15 +101,27 @@ BATCH_MODE=PAD_BATCH ./target/release/nomic-serve
 
 ### Why do batched results differ?
 
-There are two sources of differences in batched inference:
+**This model has cross-sample computation** - when multiple texts are batched together, each text's embedding is affected by the OTHER texts in the batch. This is unusual for transformer encoders and may be due to:
 
-1. **Padding effects**: Shorter sequences get padded to match the longest. While attention masks zero out padding tokens, the attention computation itself is still affected by their presence.
+1. **Batch normalization layers** in the model architecture
+2. **Matryoshka representation learning** used by Nomic v1.5
+3. **Quantization artifacts** that are batch-composition dependent
 
-2. **Numerical precision**: Even without padding, batched matrix operations in ONNX/GPU kernels use different accumulation orders than sequential operations, leading to small floating-point differences.
+**Verified behavior** (see `debug_batch.py` and `debug_batch2.py`):
+- Same text batched with **itself**: identical results (diff ≈ 0)
+- Same text batched with **any different text**: significant differences (~0.5 max diff)
+- This happens even with **no padding** (same token counts)
 
-These differences are typically small (~0.01-0.2 in embedding values). For most use cases (similarity search, clustering, classification), they're negligible and cosine similarity between sequential vs batched embeddings remains >0.99.
+```
+Partner                        Max diff from single inference
+Text 0 (itself)                0.000000  ← identical
+Text 2 (8 tokens, NO padding)  0.539796  ← different!
+Text 1 (6 tokens, padded)      0.570585  ← different
+```
 
-If you need **exact reproducibility**, use `NO_BATCH` or `SAFE_BATCH`.
+**Conclusion**: True batching cannot produce identical results to sequential processing for this model. `SAFE_BATCH = NO_BATCH` is the only correct implementation for exact reproducibility.
+
+For most use cases (similarity search, clustering), the batched embeddings are still semantically valid - cosine similarity between sequential and batched embeddings remains high. Use `PAD_BATCH` when throughput matters more than exact reproducibility.
 
 ## Deployment
 
