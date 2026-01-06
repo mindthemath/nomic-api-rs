@@ -824,13 +824,14 @@ def rectangle_pack(images, max_width=4000, padding=10):
     return canvas_width, canvas_height, placements
 
 
-def create_summary_canvases(image_results, output_dir, summary_items):
+def create_summary_canvases(image_results, output_dir, summary_items, seed=42):
     """Create two summary canvases: success cases and review cases.
-
+    
     Args:
         image_results: Dictionary of image results
         output_dir: Directory containing individual visualization images
         summary_items: List of summary items with test results
+        seed: Random seed used for test (for filename)
     """
     # Load visualization images and categorize
     success_images = []
@@ -907,9 +908,9 @@ def create_summary_canvases(image_results, output_dir, summary_items):
         for x, y, img, name in placements:
             success_canvas.paste(img, (x, y))
 
-        success_path_png = output_dir / "summary_success.png"
+        success_path_png = output_dir / f"summary_success_seed{seed}.png"
         success_canvas.save(success_path_png)
-        success_path_pdf = output_dir / "summary_success.pdf"
+        success_path_pdf = output_dir / f"summary_success_seed{seed}.pdf"
         success_canvas.save(success_path_pdf, format='PDF')
         print(f"    ✓ Saved: {success_path_png} and {success_path_pdf}")
     else:
@@ -928,9 +929,9 @@ def create_summary_canvases(image_results, output_dir, summary_items):
         for x, y, img, name in placements:
             review_canvas.paste(img, (x, y))
 
-        review_path_png = output_dir / "summary_review.png"
+        review_path_png = output_dir / f"summary_review_seed{seed}.png"
         review_canvas.save(review_path_png)
-        review_path_pdf = output_dir / "summary_review.pdf"
+        review_path_pdf = output_dir / f"summary_review_seed{seed}.pdf"
         review_canvas.save(review_path_pdf, format='PDF')
         print(f"    ✓ Saved: {review_path_png} and {review_path_pdf}")
     else:
@@ -1382,7 +1383,7 @@ def main():
     print(f"\n{'='*60}")
     print("Creating summary canvases...")
     print("=" * 60)
-    create_summary_canvases(image_results, output_dir, summary_items)
+    create_summary_canvases(image_results, output_dir, summary_items, seed=args.seed)
 
     return 0 if all_passed else 1
 
