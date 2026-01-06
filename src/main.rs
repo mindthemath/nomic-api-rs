@@ -40,7 +40,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     io::Cursor,
     net::SocketAddr,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::Instant,
 };
@@ -58,6 +58,37 @@ use utoipa::{OpenApi, ToSchema};
 
 /// Maximum input size for images (20 MB)
 const MAX_IMAGE_SIZE: usize = 20 * 1024 * 1024;
+
+// ============================================================================
+// Path Resolution
+// ============================================================================
+
+/// Resolve a path, trying CWD first, then relative to executable directory.
+/// This allows double-clicking the executable on macOS (where CWD != exe dir).
+fn resolve_model_path<P: AsRef<Path>>(relative: P) -> PathBuf {
+    let relative = relative.as_ref();
+
+    // If it's already absolute or exists relative to CWD, use as-is
+    if relative.is_absolute() || relative.exists() {
+        return relative.to_path_buf();
+    }
+
+    // Try relative to executable's directory (for double-click scenarios)
+    if let Ok(exe_path) = std::env::current_exe() {
+        // Canonicalize to resolve symlinks (important on macOS .app bundles)
+        if let Ok(canonical) = exe_path.canonicalize() {
+            if let Some(exe_dir) = canonical.parent() {
+                let exe_relative = exe_dir.join(relative);
+                if exe_relative.exists() {
+                    return exe_relative;
+                }
+            }
+        }
+    }
+
+    // Fall back to original path (will fail later with proper error)
+    relative.to_path_buf()
+}
 
 /// Image preprocessing constants (CLIP-style, from preprocessor_config.json)
 const IMAGE_SIZE: usize = 224;
@@ -414,19 +445,23 @@ async fn main() {
 
     // Text model configuration
     // Priority: TXT_MODEL > MODEL > default path
+    // resolve_model_path handles both CLI (CWD) and double-click (exe-relative) scenarios
     let txt_model_path = std::env::var("TXT_MODEL")
         .or_else(|_| std::env::var("MODEL"))
         .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("models/txt/model_quantized.onnx"));
+        .map(resolve_model_path)
+        .unwrap_or_else(|_| resolve_model_path("models/txt/model_quantized.onnx"));
 
     let tok_path = std::env::var("TOKENIZER")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("models/txt/tokenizer.json"));
+        .map(resolve_model_path)
+        .unwrap_or_else(|_| resolve_model_path("models/txt/tokenizer.json"));
 
     // Vision model configuration
     let img_model_path = std::env::var("IMG_MODEL")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("models/img/model_quantized.onnx"));
+        .map(resolve_model_path)
+        .unwrap_or_else(|_| resolve_model_path("models/img/model_quantized.onnx"));
 
     let port: u16 = std::env::var("PORT")
         .ok()

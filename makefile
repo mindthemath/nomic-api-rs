@@ -78,8 +78,12 @@ build-cuda: fmt
 	cargo build --release --features cuda
 	@echo "✓ Build complete (with CUDA support)"
 
+check:
+	@cargo check
+	@echo "✓ Check complete"
+
 clean:
-	rm -rf target
+	rm -rf target Cargo.lock
 
 # ==============================================================================
 # Run
