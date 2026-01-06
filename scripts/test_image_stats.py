@@ -1022,9 +1022,22 @@ def create_summary_canvases(
     # Create success canvas (rectangle packed)
     if success_images:
         print(f"  Creating success canvas with {len(success_images)} images...")
+        # Always create single large canvas for PNG
+        canvas_width, canvas_height, placements = rectangle_pack(
+            success_images, max_width=3840, padding=25
+        )
+        success_canvas = Image.new("RGB", (canvas_width, canvas_height), "white")
+
+        for x, y, img, name in placements:
+            success_canvas.paste(img, (x, y))
+
+        success_path_png = output_dir / f"summary_success_seed{seed}.png"
+        success_canvas.save(success_path_png, dpi=(300, 300))
+
+        # PDF: use paginated format if --paged, otherwise use single canvas
+        success_path_pdf = output_dir / f"summary_success_seed{seed}.pdf"
         if paged:
             # 8.5x11 inches at 300 DPI = 2550x3300 pixels (print quality)
-            # This gives us much more room to fit images per page
             dpi = 300
             page_width = int(8.5 * dpi)  # 2550 pixels
             page_height = int(11 * dpi)  # 3300 pixels
@@ -1034,35 +1047,32 @@ def create_summary_canvases(
                 success_images, page_width, page_height, margin=margin, padding=padding
             )
 
-            # Create page images
+            # Create page images with labels
             page_images = []
             for page_num, page_placements in enumerate(pages):
                 page_canvas = Image.new("RGB", (page_width, page_height), "white")
+                draw = ImageDraw.Draw(page_canvas)
+                try:
+                    font = ImageFont.truetype(
+                        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 12
+                    )
+                except:
+                    font = ImageFont.load_default()
+
                 for x, y, img, name in page_placements:
+                    # Strip _analysis.png suffix if present
+                    label = name.replace("_analysis.png", "").replace("_analysis", "")
+                    # Draw label above image (ensure it doesn't go off top of page)
+                    label_y = max(5, y - 15)
+                    draw.text((x, label_y), label, fill="black", font=font)
                     page_canvas.paste(img, (x, y))
                 page_images.append(page_canvas)
 
-            # Save as PNG (first page) and multi-page PDF
-            success_path_png = output_dir / f"summary_success_seed{seed}.png"
-            if page_images:
-                page_images[0].save(success_path_png, dpi=(300, 300))
-            success_path_pdf = output_dir / f"summary_success_seed{seed}.pdf"
             save_pages_as_pdf(page_images, success_path_pdf)
             print(
                 f"    ✓ Saved: {success_path_png} and {success_path_pdf} ({len(page_images)} pages)"
             )
         else:
-            canvas_width, canvas_height, placements = rectangle_pack(
-                success_images, max_width=3840, padding=25
-            )
-            success_canvas = Image.new("RGB", (canvas_width, canvas_height), "white")
-
-            for x, y, img, name in placements:
-                success_canvas.paste(img, (x, y))
-
-            success_path_png = output_dir / f"summary_success_seed{seed}.png"
-            success_canvas.save(success_path_png, dpi=(300, 300))
-            success_path_pdf = output_dir / f"summary_success_seed{seed}.pdf"
             success_canvas.save(success_path_pdf, format="PDF", dpi=(300, 300))
             print(f"    ✓ Saved: {success_path_png} and {success_path_pdf}")
     else:
@@ -1071,9 +1081,24 @@ def create_summary_canvases(
     # Create review canvas (sorted by difference, laid out in rows)
     if review_images:
         print(f"  Creating review canvas with {len(review_images)} images...")
+        # Always create single large canvas for PNG
+        # For review, use sorted rows (keep order by difference - highest first)
+        # Use rectangle_pack but it will maintain order since we pass sorted list
+        canvas_width, canvas_height, placements = rectangle_pack(
+            review_images, max_width=3840, padding=25
+        )
+        review_canvas = Image.new("RGB", (canvas_width, canvas_height), "white")
+
+        for x, y, img, name in placements:
+            review_canvas.paste(img, (x, y))
+
+        review_path_png = output_dir / f"summary_review_seed{seed}.png"
+        review_canvas.save(review_path_png, dpi=(300, 300))
+
+        # PDF: use paginated format if --paged, otherwise use single canvas
+        review_path_pdf = output_dir / f"summary_review_seed{seed}.pdf"
         if paged:
             # 8.5x11 inches at 300 DPI = 2550x3300 pixels (print quality)
-            # This gives us much more room to fit images per page
             dpi = 300
             page_width = int(8.5 * dpi)  # 2550 pixels
             page_height = int(11 * dpi)  # 3300 pixels
@@ -1083,37 +1108,32 @@ def create_summary_canvases(
                 review_images, page_width, page_height, margin=margin, padding=padding
             )
 
-            # Create page images
+            # Create page images with labels
             page_images = []
             for page_num, page_placements in enumerate(pages):
                 page_canvas = Image.new("RGB", (page_width, page_height), "white")
+                draw = ImageDraw.Draw(page_canvas)
+                try:
+                    font = ImageFont.truetype(
+                        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 12
+                    )
+                except:
+                    font = ImageFont.load_default()
+
                 for x, y, img, name in page_placements:
+                    # Strip _analysis.png suffix if present
+                    label = name.replace("_analysis.png", "").replace("_analysis", "")
+                    # Draw label above image (ensure it doesn't go off top of page)
+                    label_y = max(5, y - 15)
+                    draw.text((x, label_y), label, fill="black", font=font)
                     page_canvas.paste(img, (x, y))
                 page_images.append(page_canvas)
 
-            # Save as PNG (first page) and multi-page PDF
-            review_path_png = output_dir / f"summary_review_seed{seed}.png"
-            if page_images:
-                page_images[0].save(review_path_png, dpi=(300, 300))
-            review_path_pdf = output_dir / f"summary_review_seed{seed}.pdf"
             save_pages_as_pdf(page_images, review_path_pdf)
             print(
                 f"    ✓ Saved: {review_path_png} and {review_path_pdf} ({len(page_images)} pages)"
             )
         else:
-            # For review, use sorted rows (keep order by difference - highest first)
-            # Use rectangle_pack but it will maintain order since we pass sorted list
-            canvas_width, canvas_height, placements = rectangle_pack(
-                review_images, max_width=3840, padding=25
-            )
-            review_canvas = Image.new("RGB", (canvas_width, canvas_height), "white")
-
-            for x, y, img, name in placements:
-                review_canvas.paste(img, (x, y))
-
-            review_path_png = output_dir / f"summary_review_seed{seed}.png"
-            review_canvas.save(review_path_png, dpi=(300, 300))
-            review_path_pdf = output_dir / f"summary_review_seed{seed}.pdf"
             review_canvas.save(review_path_pdf, format="PDF", dpi=(300, 300))
             print(f"    ✓ Saved: {review_path_png} and {review_path_pdf}")
     else:
