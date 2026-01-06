@@ -296,6 +296,10 @@ async fn main() {
         "🚀 Nomic embedding server ready on http://0.0.0.0:{} ({})",
         port, device
     );
+    info!(
+        "📚 API docs available at http://0.0.0.0:{}/docs and http://0.0.0.0:{}/openapi.json",
+        port, port
+    );
 
     // Build router
     let mut app = Router::new()
