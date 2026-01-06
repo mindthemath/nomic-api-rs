@@ -193,7 +193,7 @@ docker-build-cpu: model-txt model-img
 	docker build --target runtime-cpu -t $(DOCKER_IMAGE):$(DOCKER_TAG)-cpu -t $(DOCKER_IMAGE):latest-cpu .
 
 docker-run-cpu: docker-build-cpu
-	docker run -p 8080:8080 $(DOCKER_IMAGE):$(DOCKER_TAG)-cpu
+	docker run -p 8080:8080 --dns 1.1.1.1 --dns 1.0.0.1 $(DOCKER_IMAGE):$(DOCKER_TAG)-cpu
 
 # Build GPU (CUDA) image (requires both models)
 docker-build-gpu: model-txt model-img
@@ -201,7 +201,7 @@ docker-build-gpu: model-txt model-img
 	docker build --target runtime-gpu -t $(DOCKER_IMAGE):$(DOCKER_TAG)-gpu -t $(DOCKER_IMAGE):latest-gpu .
 
 docker-run-gpu: docker-build-gpu
-	docker run --gpus all -p 8080:8080 $(DOCKER_IMAGE):$(DOCKER_TAG)-gpu
+	docker run --gpus all -p 8080:8080 --dns 1.1.1.1 --dns 1.0.0.1 $(DOCKER_IMAGE):$(DOCKER_TAG)-gpu
 
 # Push both images
 docker-push: docker-push-cpu docker-push-gpu

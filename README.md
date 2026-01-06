@@ -369,11 +369,13 @@ make docker-push
 **Usage:**
 ```bash
 # CPU
-docker run -p 8080:8080 mindthemath/nomic-text-v1.5-rs:latest-cpu
+docker run -p 8080:8080 --dns 1.1.1.1 --dns 1.0.0.1 mindthemath/nomic-text-v1.5-rs:latest-cpu
 
 # GPU (requires nvidia-docker)
-docker run --gpus all -p 8080:8080 mindthemath/nomic-text-v1.5-rs:latest-gpu
+docker run --gpus all -p 8080:8080 --dns 1.1.1.1 --dns 1.0.0.1 mindthemath/nomic-text-v1.5-rs:latest-gpu
 ```
+
+**Note**: The `--dns` flags are recommended for image embedding endpoints (`/img/embed`, `/img/batch`) to ensure fast DNS resolution. Cloudflare DNS (1.1.1.1) is used for privacy and performance. Without DNS configuration, image URL fetching may be slow (10+ seconds) due to Docker's default DNS configuration.
 
 **Image Size** (as shown by `docker images`):
 - **CPU image**: ~359MB
