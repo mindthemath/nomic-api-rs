@@ -38,7 +38,6 @@ use ort::{
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashMap,
     io::Cursor,
     net::SocketAddr,
     path::PathBuf,
@@ -122,13 +121,20 @@ impl AppState {
         // Load text model if paths provided
         let text = if let (Some(model_path), Some(tok_path)) = (txt_model, tokenizer) {
             info!("Loading text model: {:?}", model_path);
-            let mut builder =
-                SessionBuilder::new()?.with_optimization_level(GraphOptimizationLevel::Level3)?;
+            let mut builder = SessionBuilder::new()
+                .map_err(|e| anyhow::anyhow!("Failed to create session builder: {}", e))?
+                .with_optimization_level(GraphOptimizationLevel::Level3)
+                .map_err(|e| anyhow::anyhow!("Failed to set optimization level: {}", e))?;
             if use_gpu {
-                builder =
-                    builder.with_execution_providers([CUDAExecutionProvider::default().build()])?;
+                builder = builder
+                    .with_execution_providers([CUDAExecutionProvider::default().build()])
+                    .map_err(|e| anyhow::anyhow!("Failed to set execution providers: {}", e))?;
             }
-            let session = builder.commit_from_file(&model_path)?;
+            let model_bytes = std::fs::read(&model_path)
+                .map_err(|e| anyhow::anyhow!("Failed to read model file: {}", e))?;
+            let session = builder
+                .commit_from_memory(&model_bytes)
+                .map_err(|e| anyhow::anyhow!("Failed to load model: {}", e))?;
             let tokenizer = Tokenizer::from_file(&tok_path).map_err(|e| anyhow::anyhow!(e))?;
             Some(Arc::new(TextState {
                 session: Mutex::new(session),
@@ -141,13 +147,20 @@ impl AppState {
         // Load vision model if path provided
         let vision = if let Some(model_path) = img_model {
             info!("Loading vision model: {:?}", model_path);
-            let mut builder =
-                SessionBuilder::new()?.with_optimization_level(GraphOptimizationLevel::Level3)?;
+            let mut builder = SessionBuilder::new()
+                .map_err(|e| anyhow::anyhow!("Failed to create session builder: {}", e))?
+                .with_optimization_level(GraphOptimizationLevel::Level3)
+                .map_err(|e| anyhow::anyhow!("Failed to set optimization level: {}", e))?;
             if use_gpu {
-                builder =
-                    builder.with_execution_providers([CUDAExecutionProvider::default().build()])?;
+                builder = builder
+                    .with_execution_providers([CUDAExecutionProvider::default().build()])
+                    .map_err(|e| anyhow::anyhow!("Failed to set execution providers: {}", e))?;
             }
-            let session = builder.commit_from_file(&model_path)?;
+            let model_bytes = std::fs::read(&model_path)
+                .map_err(|e| anyhow::anyhow!("Failed to read model file: {}", e))?;
+            let session = builder
+                .commit_from_memory(&model_bytes)
+                .map_err(|e| anyhow::anyhow!("Failed to load model: {}", e))?;
             Some(Arc::new(VisionState {
                 session: Mutex::new(session),
             }))
@@ -1042,22 +1055,23 @@ fn embed_text(state: &TextState, text: &str) -> Result<(Vec<f32>, usize), Error>
     let attention_mask_value: Value =
         Value::from_array((input_shape, attention_mask.clone()))?.into();
 
-    let mut inputs_map = HashMap::new();
-    inputs_map.insert(
-        "input_ids".to_string(),
-        SessionInputValue::from(input_ids_value),
-    );
-    inputs_map.insert(
-        "token_type_ids".to_string(),
-        SessionInputValue::from(token_type_ids_value),
-    );
-    inputs_map.insert(
-        "attention_mask".to_string(),
-        SessionInputValue::from(attention_mask_value),
-    );
+    let inputs_vec = vec![
+        (
+            "input_ids".to_string(),
+            SessionInputValue::from(input_ids_value),
+        ),
+        (
+            "token_type_ids".to_string(),
+            SessionInputValue::from(token_type_ids_value),
+        ),
+        (
+            "attention_mask".to_string(),
+            SessionInputValue::from(attention_mask_value),
+        ),
+    ];
 
     let mut session_guard = state.session.lock().unwrap();
-    let outputs = session_guard.run(SessionInputs::from(inputs_map))?;
+    let outputs = session_guard.run(SessionInputs::from(inputs_vec))?;
     let (output_shape, raw_embedding) = outputs[0].try_extract_tensor::<f32>()?.to_owned();
 
     let embedding_vec = raw_embedding.to_vec();
@@ -1158,15 +1172,14 @@ fn embed_image(state: &VisionState, image: &DynamicImage) -> Result<Vec<f32>, Er
     let input_shape = vec![1i64, 3, IMAGE_SIZE as i64, IMAGE_SIZE as i64];
     let pixel_values: Value = Value::from_array((input_shape, tensor))?.into();
 
-    let mut inputs_map = HashMap::new();
-    inputs_map.insert(
+    let inputs_vec = vec![(
         "pixel_values".to_string(),
         SessionInputValue::from(pixel_values),
-    );
+    )];
 
     let inference_start = Instant::now();
     let mut session_guard = state.session.lock().unwrap();
-    let outputs = session_guard.run(SessionInputs::from(inputs_map))?;
+    let outputs = session_guard.run(SessionInputs::from(inputs_vec))?;
     let inference_time = inference_start.elapsed();
 
     info!(
