@@ -8,7 +8,7 @@ anyhow        = "1"
 axum          = "0.7"
 ndarray       = "0.15"
 # ort           = "1.16"   # <-- stable
-ort           = { version = "2.0.0-rc.10", features = ["ndarray"] }
+ort           = { version = "2.0.0-rc.10", features = ["ndarray", "cuda"] }
 serde         = { version = "1", features = ["derive"] }
 tokenizers    = "0.19"
 tokio         = { version = "1", features = ["full"] }

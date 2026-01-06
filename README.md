@@ -186,7 +186,9 @@ Total: ~164MB
 
 ### Dependencies
 
-The binary only requires standard C libraries (glibc, libstdc++). No GPU drivers or CUDA needed for CPU inference.
+**CPU inference**: Standard C libraries (glibc, libstdc++). No GPU drivers or CUDA needed.
+
+**GPU inference**: NVIDIA CUDA drivers and CUDA toolkit. The binary is built with CUDA support enabled by default (can be disabled by removing `"cuda"` feature from `Cargo.toml`).
 
 ### Docker
 
@@ -284,6 +286,39 @@ Quantization benefits are **primarily on GPU/TPU**, not CPU:
 **Requirements**: Python with `requests` library (`pip install requests` or `pip install -r scripts/requirements.txt`)
 
 The comparison script handles server lifecycle automatically - starts servers, waits for readiness, runs tests, and cleans up on exit (including Ctrl-C).
+
+### GPU Testing
+
+To test model variants on GPU (NVIDIA CUDA):
+
+```bash
+# Test all models on GPU
+make test-models-gpu
+```
+
+**GPU Requirements:**
+- NVIDIA GPU with CUDA support
+- CUDA drivers installed (`nvidia-smi` should work)
+- CUDA toolkit (for building ort crate with CUDA feature - already enabled)
+- **ONNX Runtime CUDA providers library**: The ort crate needs `libonnxruntime_providers_shared.so` to be available. If you see "Failed to load library libonnxruntime_providers_shared.so", the server will fall back to CPU automatically.
+
+**Note**: If CUDA libraries aren't found, the server will automatically fall back to CPU execution. Check server logs (`/tmp/nomic-serve-*.log`) to see which execution provider is actually being used.
+
+**Note**: On GPU, quantized models (especially INT8/INT4) should show significant speedups (2-4x) compared to CPU results. The GPU comparison will help you choose the best quantization for your GPU setup.
+
+**GPU Architecture Notes:**
+- **RTX 30-series (Ampere)**: INT8 quantization typically performs best (2-3x speedup). fp16 may not show speedups due to conversion overhead or lack of optimized kernels.
+- **RTX 40-series / L40S (Ada Lovelace)**: Better fp16/BF16 support with 4th-gen Tensor Cores. fp16 should show better performance than on Ampere.
+- **A100/H100**: Excellent fp16/BF16 performance, often matching or exceeding INT8 for many workloads.
+
+**Running server with GPU:**
+```bash
+# The script automatically sets LD_LIBRARY_PATH, but for manual runs:
+ORT_LIB_DIR=$(readlink -f target/release/deps/libonnxruntime_providers_shared.so 2>/dev/null | xargs dirname)
+LD_LIBRARY_PATH="$ORT_LIB_DIR:$LD_LIBRARY_PATH" USE_GPU=1 ./target/release/nomic-serve
+```
+
+**Note**: The `make test-models-gpu` script automatically finds and sets `LD_LIBRARY_PATH` to point to the ONNX Runtime CUDA providers library. If you run the server manually with `USE_GPU=1`, you may need to set `LD_LIBRARY_PATH` yourself.
 
 ## Model Info
 

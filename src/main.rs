@@ -18,6 +18,7 @@ use axum::{
 };
 use ndarray::ShapeError;
 use ort::{
+    execution_providers::CUDAExecutionProvider,
     session::{
         builder::{GraphOptimizationLevel, SessionBuilder},
         Session, SessionInputValue, SessionInputs,
@@ -73,10 +74,17 @@ struct AppState {
 }
 
 impl AppState {
-    async fn new(model: PathBuf, tok: PathBuf) -> anyhow::Result<Self> {
-        let session = SessionBuilder::new()?
-            .with_optimization_level(GraphOptimizationLevel::Level3)?
-            .commit_from_file(model)?;
+    async fn new(model: PathBuf, tok: PathBuf, use_gpu: bool) -> anyhow::Result<Self> {
+        let mut builder =
+            SessionBuilder::new()?.with_optimization_level(GraphOptimizationLevel::Level3)?;
+
+        // Enable GPU execution provider if requested
+        if use_gpu {
+            builder =
+                builder.with_execution_providers([CUDAExecutionProvider::default().build()])?;
+        }
+
+        let session = builder.commit_from_file(model)?;
         let tokenizer = Tokenizer::from_file(tok).map_err(|e| anyhow::anyhow!(e))?;
 
         Ok(Self {
@@ -122,9 +130,16 @@ async fn main() -> anyhow::Result<()> {
         .ok()
         .and_then(|p| p.parse().ok())
         .unwrap_or(8080);
+    let use_gpu = std::env::var("USE_GPU")
+        .map(|v| v == "1" || v.to_lowercase() == "true")
+        .unwrap_or(false);
 
-    let state = AppState::new(model_path, tok_path).await?;
-    info!("🚀 Nomic embedding server ready on http://0.0.0.0:{}", port);
+    let state = AppState::new(model_path, tok_path, use_gpu).await?;
+    let device = if use_gpu { "GPU" } else { "CPU" };
+    info!(
+        "🚀 Nomic embedding server ready on http://0.0.0.0:{} ({})",
+        port, device
+    );
 
     let app = Router::new()
         .route("/health", get(health_handler))

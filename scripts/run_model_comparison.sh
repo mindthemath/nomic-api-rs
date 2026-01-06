@@ -38,6 +38,46 @@ if ! python3 -c "import requests" 2>/dev/null; then
     exit 1
 fi
 
+# Check for GPU mode
+USE_GPU="${USE_GPU:-0}"
+if [[ "$USE_GPU" == "1" || "$USE_GPU" == "true" ]]; then
+    echo -e "${GREEN}GPU mode enabled${NC}"
+    GPU_ENV="USE_GPU=1"
+    
+    # Find ONNX Runtime CUDA providers library directory
+    # The ort crate stores libraries in target/release/ or in ~/.cache/ort.pyke.io/
+    ORT_LIB_DIR=""
+    
+    # Check target/release/deps first (most reliable)
+    if [[ -d "$PROJECT_ROOT/target/release/deps" ]]; then
+        # Find the actual library location via symlink
+        if [[ -L "$PROJECT_ROOT/target/release/deps/libonnxruntime_providers_shared.so" ]]; then
+            ORT_LIB_DIR=$(readlink -f "$PROJECT_ROOT/target/release/deps/libonnxruntime_providers_shared.so" | xargs dirname 2>/dev/null)
+        elif [[ -f "$PROJECT_ROOT/target/release/deps/libonnxruntime_providers_shared.so" ]]; then
+            ORT_LIB_DIR="$PROJECT_ROOT/target/release/deps"
+        fi
+    fi
+    
+    # Fallback to target/release/
+    if [[ -z "$ORT_LIB_DIR" && -d "$PROJECT_ROOT/target/release" ]]; then
+        if [[ -L "$PROJECT_ROOT/target/release/libonnxruntime_providers_shared.so" ]]; then
+            ORT_LIB_DIR=$(readlink -f "$PROJECT_ROOT/target/release/libonnxruntime_providers_shared.so" | xargs dirname 2>/dev/null)
+        elif [[ -f "$PROJECT_ROOT/target/release/libonnxruntime_providers_shared.so" ]]; then
+            ORT_LIB_DIR="$PROJECT_ROOT/target/release"
+        fi
+    fi
+    
+    if [[ -n "$ORT_LIB_DIR" && -d "$ORT_LIB_DIR" ]]; then
+        echo -e "  ${GREEN}Found ONNX Runtime libraries in: $ORT_LIB_DIR${NC}"
+        export LD_LIBRARY_PATH="$ORT_LIB_DIR:${LD_LIBRARY_PATH:-}"
+    else
+        echo -e "  ${YELLOW}⚠ Warning: Could not find ONNX Runtime CUDA providers library${NC}"
+        echo -e "  ${YELLOW}  GPU mode may fall back to CPU. Check logs for details.${NC}"
+    fi
+else
+    GPU_ENV=""
+fi
+
 # Model configurations: (port, model_file, name)
 # Baseline is fp32 (full precision, unquantized)
 declare -a MODELS=(
@@ -82,8 +122,13 @@ for model_config in "${MODELS[@]}"; do
     
     echo "  Starting $name on port $port with $model_file"
     
-    # Start server in background
-    MODEL="$model_file" PORT="$port" "$BINARY" > "/tmp/nomic-serve-$port.log" 2>&1 &
+    # Start server in background with optional GPU flag
+    # LD_LIBRARY_PATH is already exported if GPU mode is enabled
+    if [[ -n "$GPU_ENV" ]]; then
+        env $GPU_ENV MODEL="$model_file" PORT="$port" "$BINARY" > "/tmp/nomic-serve-$port.log" 2>&1 &
+    else
+        env MODEL="$model_file" PORT="$port" "$BINARY" > "/tmp/nomic-serve-$port.log" 2>&1 &
+    fi
     pid=$!
     PIDS+=("$pid")
     
@@ -117,7 +162,11 @@ done
 
 # Run comparisons
 echo -e "\n${GREEN}Running model comparisons...${NC}"
-echo "Baseline: model.onnx (fp32, full precision, port 8080)"
+if [[ -n "$GPU_ENV" ]]; then
+    echo "Baseline: model.onnx (fp32, full precision, port 8080) [GPU]"
+else
+    echo "Baseline: model.onnx (fp32, full precision, port 8080) [CPU]"
+fi
 echo ""
 
 # Compare each variant against baseline (fp32)

@@ -77,8 +77,14 @@ test-list:
 		-d '{"inputs": ["ONNX in Rust is fast", "Python is also great", "Embeddings are useful"]}' | \
 		jq '{count: (.embeddings | length), tokens, time_ms: (.time_ms | floor), samples: [.embeddings[] | .[0:3] | map(. * 1000 | floor / 1000)]}'
 
-# Compare all model variants against baseline (model_quantized.onnx)
+# Compare all model variants against baseline (model.onnx, fp32)
 # Requires: models-all, build, and Python requests library
 test-models: build models-all
-	@echo "Starting model variant comparison..."
-	@bash scripts/run_model_comparison.sh
+	@echo "Starting model variant comparison (CPU)..."
+	@USE_GPU=0 bash scripts/run_model_comparison.sh
+
+# Compare all model variants on GPU
+# Requires: models-all, build, CUDA drivers, and Python requests library
+test-models-gpu: build models-all
+	@echo "Starting model variant comparison (GPU)..."
+	@USE_GPU=1 bash scripts/run_model_comparison.sh
