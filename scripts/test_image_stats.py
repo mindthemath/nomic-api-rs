@@ -678,7 +678,8 @@ def create_visualization(
     else:
         diff_prefix = "hex??_diff0.000000e+000_rgb0.000000e+000_"
 
-    output_path = output_dir / f"{diff_prefix}picsum_{image_name}_analysis.png"
+    # image_name is now the unique_key (e.g., "picsum_42_200x150"), so use it directly
+    output_path = output_dir / f"{diff_prefix}{image_name}_analysis.png"
     composite.save(output_path)
     return output_path
 
@@ -959,11 +960,13 @@ def create_summary_canvases(
     # Build a lookup for visualization file paths
     vis_files = {}
     for vis_file in output_dir.glob("hex*_diff*_rgb*_picsum_*_analysis.png"):
-        # Extract image name from filename: hex*_diff*_rgb*_picsum_{name}_analysis.png
+        # Extract unique key from filename: hex*_diff*_rgb*_picsum_{id}_{width}x{height}_analysis.png
+        # The unique_key is now "picsum_{id}_{width}x{height}"
         parts = vis_file.stem.split("_picsum_")
         if len(parts) == 2:
-            image_name = parts[1].replace("_analysis", "")
-            vis_files[image_name] = vis_file
+            # Reconstruct the unique_key: "picsum_" + the rest (without "_analysis")
+            unique_key = "picsum_" + parts[1].replace("_analysis", "")
+            vis_files[unique_key] = vis_file
 
     # Categorize images based on test results
     for (
@@ -1176,22 +1179,43 @@ def main():
         image_generator = generate_test_images(seed=args.seed)
         target_count = args.count
 
+    attempts = 0
+    max_attempts = target_count * 3  # Safety limit: stop after 3x target attempts
     for image_url in image_generator:
         if len(downloaded_images) >= target_count:
             break
+        if attempts >= max_attempts:
+            print(f"\n⚠️  Stopped after {max_attempts} attempts (safety limit)")
+            break
+        attempts += 1
+
+        # Extract image name and create unique key that matches cache file naming
+        # This ensures count matches cache files created (each unique ID+dimensions = one cache file)
         image_name = (
             image_url.split("/id/")[1].split("/")[0]
             if "/id/" in image_url
             else "unknown"
         )
+        # Create unique key from URL parts (matches cache file naming: picsum_{id}_{width}x{height})
+        parts = image_url.split("/")
+        if len(parts) >= 3 and "/id/" in image_url:
+            img_id = parts[-3]
+            width = parts[-2]
+            height = parts[-1]
+            unique_key = f"picsum_{img_id}_{width}x{height}"
+        else:
+            unique_key = image_url  # Fallback to URL if parsing fails
+
         try:
             image, image_bytes, was_cached = download_image(
                 image_url, cache_dir=cache_dir
             )
-            downloaded_images[image_name] = {
+            # Use unique key so each unique URL (with dimensions) counts separately
+            downloaded_images[unique_key] = {
                 "url": image_url,
                 "image": image,
                 "image_bytes": image_bytes,
+                "image_name": image_name,  # Store for reference
             }
             cache_status = " (cached)" if was_cached else ""
             print(
@@ -1215,18 +1239,21 @@ def main():
 
     # Step 2: Prepare all test tasks
     test_tasks = []
-    for image_name, img_data in downloaded_images.items():
-        image_results[image_name] = {
+    for unique_key, img_data in downloaded_images.items():
+        image_name = img_data["image_name"]  # Extract image name from stored data
+        # Use unique_key for image_results to handle same ID with different dimensions
+        image_results[unique_key] = {
             "url": img_data["url"],
             "arithmetic": None,
             "geometric": None,
             "image": img_data["image"],
             "image_bytes": img_data["image_bytes"],
+            "image_name": image_name,  # Store for display/reference
         }
         for method in ["arithmetic", "geometric"]:
             test_tasks.append(
                 (
-                    image_name,
+                    unique_key,  # Use unique_key instead of image_name
                     img_data["image"],
                     img_data["image_bytes"],
                     img_data["url"],
