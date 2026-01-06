@@ -208,7 +208,7 @@ test-img-stats-arithmetic:
 # Validate Rust image-stats against Python reference
 test-img-stats-validate:
 	@echo "Validating Rust /img/stats against Python reference..."
-	@cd scripts && python3 test_image_stats.py --rust-url http://localhost:8080 --count 100 --seed 1231
+	@cd scripts && python3 test_image_stats.py --rust-url http://localhost:8080 --count 100 --seed 1231 --tidy --paged
 
 # ==============================================================================
 # Test - Multimodal

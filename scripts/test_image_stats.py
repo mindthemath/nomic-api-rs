@@ -752,6 +752,82 @@ def generate_test_images(seed=42):
         yield f"https://picsum.photos/id/{img_id}/{width}/{height}"
 
 
+def pack_into_pages(images, page_width, page_height, margin=25, padding=10):
+    """Pack images into multiple pages of fixed size.
+
+    Args:
+        images: List of (image, name) tuples
+        page_width: Width of each page in pixels
+        page_height: Height of each page in pixels
+        margin: Margin on all sides in pixels
+        padding: Padding between images in pixels
+
+    Returns:
+        List of pages, where each page is a list of (x, y, image, name) tuples
+    """
+    if not images:
+        return []
+
+    pages = []
+    current_page = []
+    current_y = margin
+    current_row = []
+    current_row_width = margin
+    current_row_max_height = 0
+
+    def finish_row():
+        """Finish current row and add to current page."""
+        nonlocal current_y, current_row, current_row_width, current_row_max_height
+        if current_row:
+            for x, img_item, name_item in current_row:
+                current_page.append((x, current_y, img_item, name_item))
+            current_y += current_row_max_height + padding
+            current_row = []
+            current_row_width = margin
+            current_row_max_height = 0
+
+    def finish_page():
+        """Finish current page and start a new one."""
+        nonlocal current_page, current_y, current_row, current_row_width, current_row_max_height
+        if current_page:
+            pages.append(current_page)
+        current_page = []
+        current_y = margin
+        current_row = []
+        current_row_width = margin
+        current_row_max_height = 0
+
+    for img, name in images:
+        img_width, img_height = img.size
+
+        # Check if image fits in current row horizontally
+        if current_row_width + img_width + padding > page_width - margin:
+            # Row is full, finish it
+            finish_row()
+
+            # Check if we need a new page after finishing the row
+            if current_y + img_height + margin > page_height:
+                finish_page()
+
+        # Check if image fits vertically on current page (after potential row finish)
+        if current_y + img_height + margin > page_height:
+            # Need new page
+            finish_page()
+
+        # Add image to current row
+        current_row.append((current_row_width, img, name))
+        current_row_width += img_width + padding
+        current_row_max_height = max(current_row_max_height, img_height)
+
+    # Finish remaining row and page
+    if current_row:
+        finish_row()
+    if current_page:
+        pages.append(current_page)
+
+    return pages
+
+
 def rectangle_pack(images, max_width=4000, padding=10):
     """Pack rectangles using a uniform grid layout with consistent spacing.
 
@@ -824,14 +900,57 @@ def rectangle_pack(images, max_width=4000, padding=10):
     return canvas_width, canvas_height, placements
 
 
-def create_summary_canvases(image_results, output_dir, summary_items, seed=42):
+def save_pages_as_pdf(page_images, output_path):
+    """Save multiple page images as a multi-page PDF.
+
+    Args:
+        page_images: List of PIL Image objects (one per page)
+        output_path: Path to save the PDF
+    """
+    try:
+        # Try using img2pdf if available
+        from io import BytesIO
+
+        import img2pdf
+
+        # Convert PIL Images to bytes for img2pdf
+        image_bytes_list = []
+        for img in page_images:
+            img_bytes = BytesIO()
+            img.save(img_bytes, format="PNG", dpi=(300, 300))
+            img_bytes.seek(0)
+            image_bytes_list.append(img_bytes)
+
+        with open(output_path, "wb") as f:
+            f.write(img2pdf.convert(image_bytes_list))
+    except ImportError:
+        # Fallback: save as individual page images and print instructions
+        print(
+            f"    ⚠️  img2pdf not available. Saving {len(page_images)} individual page images instead."
+        )
+        for i, page_img in enumerate(page_images):
+            page_path = output_path.parent / f"{output_path.stem}_page{i+1}.png"
+            page_img.save(page_path, dpi=(300, 300))
+        print(f"    Install img2pdf: pip install img2pdf")
+        print(
+            f"    Then combine: img2pdf -o {output_path} {output_path.parent}/{output_path.stem}_page*.png"
+        )
+        # Still save first page as PDF for compatibility
+        if page_images:
+            page_images[0].save(output_path, format="PDF", dpi=(300, 300))
+
+
+def create_summary_canvases(
+    image_results, output_dir, summary_items, seed=42, paged=False
+):
     """Create two summary canvases: success cases and review cases.
-    
+
     Args:
         image_results: Dictionary of image results
         output_dir: Directory containing individual visualization images
         summary_items: List of summary items with test results
         seed: Random seed used for test (for filename)
+        paged: If True, create paginated PDFs (8.5x11 inches with 25px margins)
     """
     # Load visualization images and categorize
     success_images = []
@@ -900,40 +1019,100 @@ def create_summary_canvases(image_results, output_dir, summary_items, seed=42):
     # Create success canvas (rectangle packed)
     if success_images:
         print(f"  Creating success canvas with {len(success_images)} images...")
-        canvas_width, canvas_height, placements = rectangle_pack(
-            success_images, max_width=3840, padding=25
-        )
-        success_canvas = Image.new("RGB", (canvas_width, canvas_height), "white")
+        if paged:
+            # 8.5x11 inches at 300 DPI = 2550x3300 pixels (print quality)
+            # This gives us much more room to fit images per page
+            dpi = 300
+            page_width = int(8.5 * dpi)  # 2550 pixels
+            page_height = int(11 * dpi)  # 3300 pixels
+            margin = int(25 * dpi / 72)  # Scale margin proportionally: ~104 pixels
+            padding = int(25 * dpi / 72)  # Scale padding proportionally: ~104 pixels
+            pages = pack_into_pages(
+                success_images, page_width, page_height, margin=margin, padding=padding
+            )
 
-        for x, y, img, name in placements:
-            success_canvas.paste(img, (x, y))
+            # Create page images
+            page_images = []
+            for page_num, page_placements in enumerate(pages):
+                page_canvas = Image.new("RGB", (page_width, page_height), "white")
+                for x, y, img, name in page_placements:
+                    page_canvas.paste(img, (x, y))
+                page_images.append(page_canvas)
 
-        success_path_png = output_dir / f"summary_success_seed{seed}.png"
-        success_canvas.save(success_path_png)
-        success_path_pdf = output_dir / f"summary_success_seed{seed}.pdf"
-        success_canvas.save(success_path_pdf, format='PDF')
-        print(f"    ✓ Saved: {success_path_png} and {success_path_pdf}")
+            # Save as PNG (first page) and multi-page PDF
+            success_path_png = output_dir / f"summary_success_seed{seed}.png"
+            if page_images:
+                page_images[0].save(success_path_png, dpi=(300, 300))
+            success_path_pdf = output_dir / f"summary_success_seed{seed}.pdf"
+            save_pages_as_pdf(page_images, success_path_pdf)
+            print(
+                f"    ✓ Saved: {success_path_png} and {success_path_pdf} ({len(page_images)} pages)"
+            )
+        else:
+            canvas_width, canvas_height, placements = rectangle_pack(
+                success_images, max_width=3840, padding=25
+            )
+            success_canvas = Image.new("RGB", (canvas_width, canvas_height), "white")
+
+            for x, y, img, name in placements:
+                success_canvas.paste(img, (x, y))
+
+            success_path_png = output_dir / f"summary_success_seed{seed}.png"
+            success_canvas.save(success_path_png, dpi=(300, 300))
+            success_path_pdf = output_dir / f"summary_success_seed{seed}.pdf"
+            success_canvas.save(success_path_pdf, format="PDF", dpi=(300, 300))
+            print(f"    ✓ Saved: {success_path_png} and {success_path_pdf}")
     else:
         print(f"  No success cases to display")
 
     # Create review canvas (sorted by difference, laid out in rows)
     if review_images:
         print(f"  Creating review canvas with {len(review_images)} images...")
-        # For review, use sorted rows (keep order by difference - highest first)
-        # Use rectangle_pack but it will maintain order since we pass sorted list
-        canvas_width, canvas_height, placements = rectangle_pack(
-            review_images, max_width=3840, padding=25
-        )
-        review_canvas = Image.new("RGB", (canvas_width, canvas_height), "white")
+        if paged:
+            # 8.5x11 inches at 300 DPI = 2550x3300 pixels (print quality)
+            # This gives us much more room to fit images per page
+            dpi = 300
+            page_width = int(8.5 * dpi)  # 2550 pixels
+            page_height = int(11 * dpi)  # 3300 pixels
+            margin = int(25 * dpi / 72)  # Scale margin proportionally: ~104 pixels
+            padding = int(25 * dpi / 72)  # Scale padding proportionally: ~104 pixels
+            pages = pack_into_pages(
+                review_images, page_width, page_height, margin=margin, padding=padding
+            )
 
-        for x, y, img, name in placements:
-            review_canvas.paste(img, (x, y))
+            # Create page images
+            page_images = []
+            for page_num, page_placements in enumerate(pages):
+                page_canvas = Image.new("RGB", (page_width, page_height), "white")
+                for x, y, img, name in page_placements:
+                    page_canvas.paste(img, (x, y))
+                page_images.append(page_canvas)
 
-        review_path_png = output_dir / f"summary_review_seed{seed}.png"
-        review_canvas.save(review_path_png)
-        review_path_pdf = output_dir / f"summary_review_seed{seed}.pdf"
-        review_canvas.save(review_path_pdf, format='PDF')
-        print(f"    ✓ Saved: {review_path_png} and {review_path_pdf}")
+            # Save as PNG (first page) and multi-page PDF
+            review_path_png = output_dir / f"summary_review_seed{seed}.png"
+            if page_images:
+                page_images[0].save(review_path_png, dpi=(300, 300))
+            review_path_pdf = output_dir / f"summary_review_seed{seed}.pdf"
+            save_pages_as_pdf(page_images, review_path_pdf)
+            print(
+                f"    ✓ Saved: {review_path_png} and {review_path_pdf} ({len(page_images)} pages)"
+            )
+        else:
+            # For review, use sorted rows (keep order by difference - highest first)
+            # Use rectangle_pack but it will maintain order since we pass sorted list
+            canvas_width, canvas_height, placements = rectangle_pack(
+                review_images, max_width=3840, padding=25
+            )
+            review_canvas = Image.new("RGB", (canvas_width, canvas_height), "white")
+
+            for x, y, img, name in placements:
+                review_canvas.paste(img, (x, y))
+
+            review_path_png = output_dir / f"summary_review_seed{seed}.png"
+            review_canvas.save(review_path_png, dpi=(300, 300))
+            review_path_pdf = output_dir / f"summary_review_seed{seed}.pdf"
+            review_canvas.save(review_path_pdf, format="PDF", dpi=(300, 300))
+            print(f"    ✓ Saved: {review_path_png} and {review_path_pdf}")
     else:
         print(f"  No review cases to display")
 
@@ -957,6 +1136,16 @@ def main():
         type=int,
         default=10,
         help="Number of test images to use (default: 10)",
+    )
+    parser.add_argument(
+        "--tidy",
+        action="store_true",
+        help="Remove images in results directory except summary files (files starting with 'summary_')",
+    )
+    parser.add_argument(
+        "--paged",
+        action="store_true",
+        help="Create paginated PDFs (8.5x11 inches with 25px margins) instead of one giant canvas",
     )
     args = parser.parse_args()
 
@@ -1383,7 +1572,25 @@ def main():
     print(f"\n{'='*60}")
     print("Creating summary canvases...")
     print("=" * 60)
-    create_summary_canvases(image_results, output_dir, summary_items, seed=args.seed)
+    create_summary_canvases(
+        image_results, output_dir, summary_items, seed=args.seed, paged=args.paged
+    )
+
+    # Tidy up results directory if requested (after summary files are created)
+    if args.tidy:
+        print(f"\n{'='*60}")
+        print("Tidying results directory...")
+        print("=" * 60)
+        removed_count = 0
+        for file_path in output_dir.iterdir():
+            if file_path.is_file() and not file_path.name.startswith("summary_"):
+                try:
+                    file_path.unlink()
+                    removed_count += 1
+                    print(f"  ✓ Removed: {file_path.name}")
+                except Exception as e:
+                    print(f"  ✗ Failed to remove {file_path.name}: {e}")
+        print(f"\n✓ Tidied up: removed {removed_count} file(s), kept summary files")
 
     return 0 if all_passed else 1
 
