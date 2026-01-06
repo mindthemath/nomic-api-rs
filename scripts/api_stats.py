@@ -155,7 +155,7 @@ def calculate_color_average(valid_pixels, method="arithmetic"):
 
 def rgb_to_hex(rgb_array):
     """Convert RGB array (0-1 range) to hex color code"""
-    r_int, g_int, b_int = [round(c * 255) for c in rgb_array]
+    r_int, g_int, b_int = [int(c * 255) for c in rgb_array]
     return f"#{r_int:02x}{g_int:02x}{b_int:02x}"
 
 

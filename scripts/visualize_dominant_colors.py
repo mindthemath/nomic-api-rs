@@ -55,13 +55,13 @@ def call_rust_stats(image_bytes, averaging_method):
 
 def rgb_to_hex(rgb):
     """Convert RGB [0-1] to hex."""
-    r, g, b = [round(c * 255) for c in rgb]
+    r, g, b = [int(c * 255) for c in rgb]
     return f"#{r:02x}{g:02x}{b:02x}"
 
 
 def create_color_swatch(rgb, size=(200, 100)):
     """Create a color swatch image."""
-    img = Image.new("RGB", size, tuple(round(c * 255) for c in rgb))
+    img = Image.new("RGB", size, tuple(int(c * 255) for c in rgb))
     return img
 
 
