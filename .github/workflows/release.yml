@@ -44,6 +44,7 @@ jobs:
         run: |
           docker buildx build \
             --platform ${{ matrix.platform }} \
+            --target runtime-cpu \
             --load \
             -t nomic-embed-text-v1-5:${{ matrix.artifact }} \
             .
@@ -53,7 +54,6 @@ jobs:
           docker create --name temp-extract nomic-embed-text-v1-5:${{ matrix.artifact }}
           mkdir -p release
           docker cp temp-extract:/app/nomic-serve release/
-          docker cp temp-extract:/app/lib release/ || true
           docker cp temp-extract:/app/models release/
           docker rm temp-extract
 
@@ -62,8 +62,6 @@ jobs:
           cd release
           mkdir -p nomic-embed-text-v1-5-${VERSION}-${{ matrix.artifact }}
           mv nomic-serve models nomic-embed-text-v1-5-${VERSION}-${{ matrix.artifact }}/
-          # Copy lib directory if it exists (for GPU support)
-          [ -d lib ] && mv lib nomic-embed-text-v1-5-${VERSION}-${{ matrix.artifact }}/ || true
           tar -czvf ../nomic-embed-text-v1-5-${VERSION}-${{ matrix.artifact }}.tar.gz nomic-embed-text-v1-5-${VERSION}-${{ matrix.artifact }}
 
       - name: Upload artifact
@@ -120,5 +118,6 @@ jobs:
             - `PORT` - Server port (default: 8080)
             - `MODEL` - Path to ONNX model file (default: models/txt/model_quantized.onnx)
             - `TOKENIZER` - Path to tokenizer file (default: models/txt/tokenizer.json)
-            - `USE_GPU` - Set to 1 to enable GPU (requires CUDA libraries in lib/)
-            - `LD_LIBRARY_PATH` - Add lib/ to this for GPU support (e.g., `export LD_LIBRARY_PATH=./lib:$LD_LIBRARY_PATH`)
+            - `USE_GPU` - Set to 1 to enable GPU (requires CUDA drivers and ONNX Runtime CUDA providers)
+            
+            **Note**: This release includes CPU-only runtime. For GPU support, use the Docker images (`mindthemath/nomic-text-v1.5-rs:*-gpu`) or manually install CUDA libraries.
