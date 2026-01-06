@@ -11,7 +11,7 @@
 
 use axum::{
     extract::State,
-    http::StatusCode,
+    http::{header, Method, StatusCode},
     response::{IntoResponse, Json},
     routing::{get, post},
     Router,
@@ -35,8 +35,12 @@ use std::{
     time::Instant,
 };
 use tokenizers::Tokenizer;
-use tower_http::trace::TraceLayer;
+use tower_http::{
+    cors::{AllowOrigin, CorsLayer},
+    trace::TraceLayer,
+};
 use tracing::info;
+use utoipa::{OpenApi, ToSchema};
 
 // ============================================================================
 // Error Handling
@@ -98,29 +102,83 @@ impl AppState {
 // Request/Response Types
 // ============================================================================
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 struct EmbedRequest {
+    /// Text to embed
+    #[schema(example = "ONNX in Rust is fast")]
     inputs: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 struct BatchRequest {
+    /// List of texts to embed
+    #[schema(example = json!(["Hello world", "Goodbye world"]))]
     inputs: Vec<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 struct EmbedResponse {
+    /// 768-dimensional embedding vector
+    #[schema(example = json!([0.123, 0.456, -0.789]))]
     embedding: Vec<f32>,
+    /// Number of tokens in the input
+    #[schema(example = 6)]
     tokens: usize,
+    /// Processing time in milliseconds
+    #[schema(example = 12.34)]
     time_ms: f64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 struct BatchResponse {
+    /// List of 768-dimensional embedding vectors (one per input)
+    #[schema(example = json!([[0.123, 0.456], [0.789, -0.123]]))]
     embeddings: Vec<Vec<f32>>,
+    /// Token count for each input
+    #[schema(example = json!([4, 5]))]
     tokens: Vec<usize>,
+    /// Total processing time in milliseconds
+    #[schema(example = 45.67)]
     time_ms: f64,
 }
+
+#[derive(Serialize, ToSchema)]
+struct HealthResponse {
+    /// Health status
+    #[schema(example = "OK")]
+    status: String,
+}
+
+#[derive(Serialize, ToSchema)]
+struct ErrorResponse {
+    /// Error message
+    #[schema(example = "Tokenization failed")]
+    error: String,
+}
+
+// ============================================================================
+// OpenAPI Documentation
+// ============================================================================
+
+#[derive(OpenApi)]
+#[openapi(
+    info(
+        title = "nomic-serve",
+        description = "Fast embedding server for nomic-embed-text-v1.5 using ONNX Runtime",
+        version = "0.1.0",
+        license(name = "MIT")
+    ),
+    paths(health_handler, embed_handler, batch_handler),
+    components(schemas(
+        EmbedRequest,
+        EmbedResponse,
+        BatchRequest,
+        BatchResponse,
+        HealthResponse,
+        ErrorResponse,
+    ))
+)]
+struct ApiDoc;
 
 // ============================================================================
 // Main Entry Point
@@ -144,6 +202,11 @@ async fn main() {
         .map(|v| v == "1" || v.to_lowercase() == "true")
         .unwrap_or(false);
 
+    // CORS configuration
+    let disable_cors = std::env::var("DISABLE_CORS")
+        .map(|v| matches!(v.to_lowercase().as_str(), "true" | "1" | "yes" | "y"))
+        .unwrap_or(false);
+
     let state = match AppState::new(model_path.clone(), tok_path.clone(), use_gpu).await {
         Ok(state) => state,
         Err(e) => {
@@ -159,12 +222,24 @@ async fn main() {
         port, device
     );
 
-    let app = Router::new()
+    // Build router
+    let mut app = Router::new()
         .route("/health", get(health_handler))
         .route("/embed", post(embed_handler))
         .route("/batch", post(batch_handler))
+        .route("/openapi.json", get(openapi_handler))
+        .route("/docs", get(docs_handler))
         .layer(TraceLayer::new_for_http())
         .with_state(state);
+
+    // Apply CORS middleware if not disabled
+    if disable_cors {
+        info!("CORS disabled via DISABLE_CORS env var");
+    } else {
+        let cors_layer = build_cors_layer();
+        app = app.layer(cors_layer);
+        info!("CORS enabled");
+    }
 
     let addr: SocketAddr = match format!("0.0.0.0:{}", port).parse() {
         Ok(addr) => addr,
@@ -189,13 +264,88 @@ async fn main() {
 }
 
 // ============================================================================
+// CORS Configuration
+// ============================================================================
+
+/// Default allowed origins for CORS (localhost only for development)
+const DEFAULT_CORS_ORIGINS: &[&str] = &[
+    "http://localhost:3000",
+    "http://localhost:8080",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:8080",
+];
+
+/// Build CORS layer with configurable origins
+///
+/// Origins can be set via `CORS_ORIGINS` env var (comma-separated).
+/// If not set, uses DEFAULT_CORS_ORIGINS.
+/// If CORS_ORIGINS is set but contains no valid origins, falls back to DEFAULT_CORS_ORIGINS
+/// (never falls back to permissive mode for security).
+fn build_cors_layer() -> CorsLayer {
+    let env_origins: Vec<String> = std::env::var("CORS_ORIGINS")
+        .map(|s| s.split(',').map(|o| o.trim().to_string()).collect())
+        .unwrap_or_default();
+
+    // Parse origins from env var, or use defaults if env var not set
+    let parsed_origins: Vec<_> = if env_origins.is_empty() {
+        // No CORS_ORIGINS set, use defaults
+        DEFAULT_CORS_ORIGINS
+            .iter()
+            .filter_map(|o| o.parse().ok())
+            .collect()
+    } else {
+        // CORS_ORIGINS set - parse it, but fall back to defaults if all invalid
+        let parsed: Vec<_> = env_origins.iter().filter_map(|o| o.parse().ok()).collect();
+        if parsed.is_empty() {
+            tracing::warn!(
+                "CORS_ORIGINS contains no valid origins, falling back to localhost defaults"
+            );
+            DEFAULT_CORS_ORIGINS
+                .iter()
+                .filter_map(|o| o.parse().ok())
+                .collect()
+        } else {
+            parsed
+        }
+    };
+
+    // Log count only (not actual origins) to avoid information disclosure
+    info!("CORS: Allowing {} origin(s)", parsed_origins.len());
+
+    CorsLayer::new()
+        .allow_origin(AllowOrigin::list(parsed_origins))
+        .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+        .allow_headers([header::CONTENT_TYPE, header::ACCEPT, header::AUTHORIZATION])
+        .allow_credentials(true)
+}
+
+// ============================================================================
 // HTTP Handlers
 // ============================================================================
 
-async fn health_handler() -> &'static str {
-    "OK"
+#[utoipa::path(
+    get,
+    path = "/health",
+    responses(
+        (status = 200, description = "Server is healthy", body = HealthResponse)
+    )
+)]
+async fn health_handler() -> Json<HealthResponse> {
+    Json(HealthResponse {
+        status: "OK".to_string(),
+    })
 }
 
+#[utoipa::path(
+    post,
+    path = "/embed",
+    request_body = EmbedRequest,
+    responses(
+        (status = 200, description = "Embedding generated successfully", body = EmbedResponse),
+        (status = 400, description = "Bad request (tokenization failed)", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse)
+    )
+)]
 async fn embed_handler(
     State(state): State<AppState>,
     Json(req): Json<EmbedRequest>,
@@ -212,6 +362,16 @@ async fn embed_handler(
     }))
 }
 
+#[utoipa::path(
+    post,
+    path = "/batch",
+    request_body = BatchRequest,
+    responses(
+        (status = 200, description = "Embeddings generated successfully", body = BatchResponse),
+        (status = 400, description = "Bad request (tokenization failed)", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse)
+    )
+)]
 async fn batch_handler(
     State(state): State<AppState>,
     Json(req): Json<BatchRequest>,
@@ -234,6 +394,26 @@ async fn batch_handler(
         tokens,
         time_ms: start.elapsed().as_secs_f64() * 1000.0,
     }))
+}
+
+async fn openapi_handler() -> Json<serde_json::Value> {
+    let openapi = ApiDoc::openapi();
+    let mut spec: serde_json::Value =
+        serde_json::to_value(&openapi).unwrap_or(serde_json::json!({}));
+    // Upgrade to OpenAPI 3.1.0
+    if let Some(obj) = spec.as_object_mut() {
+        obj.insert("openapi".to_string(), serde_json::json!("3.1.0"));
+    }
+    Json(spec)
+}
+
+async fn docs_handler() -> impl IntoResponse {
+    const SWAGGER_HTML: &str = include_str!("../static/swagger-ui/index.html");
+    (
+        StatusCode::OK,
+        [("content-type", "text/html")],
+        SWAGGER_HTML,
+    )
 }
 
 // ============================================================================

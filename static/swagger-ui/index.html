@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>nomic-serve API</title>
+    <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5.17.14/swagger-ui.css">
+    <style>
+        :root {
+            /* Softer, higher-readability dark theme */
+            --primary: #2dd4bf;
+            --primary-strong: #14b8a6;
+            --primary-dark: #0f766e;
+            --bg: #0b1220;
+            --bg-elev-1: #0f1a2e;
+            --bg-elev-2: #13233b;
+            --text: #e8edf7;
+            --text-muted: #b7c1d6;
+            --border: rgba(232, 237, 247, 0.10);
+            --accent: #7dd3fc;
+            --shadow: 0 12px 30px rgba(0, 0, 0, 0.35);
+            --shadow-soft: 0 8px 18px rgba(0, 0, 0, 0.25);
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            padding: 0;
+            background:
+                radial-gradient(1200px 600px at 15% 0%, rgba(45, 212, 191, 0.12) 0%, rgba(45, 212, 191, 0.0) 60%),
+                radial-gradient(900px 500px at 85% 5%, rgba(125, 211, 252, 0.10) 0%, rgba(125, 211, 252, 0.0) 55%),
+                var(--bg);
+            color: var(--text);
+            font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+            line-height: 1.5;
+        }
+
+        /* Header */
+        .header {
+            background:
+                linear-gradient(135deg, rgba(19, 35, 59, 0.95) 0%, rgba(15, 26, 46, 0.95) 100%);
+            border-bottom: 1px solid var(--border);
+            padding: 1.25rem 1.5rem;
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            backdrop-filter: blur(8px);
+        }
+
+        .header-icon {
+            width: 48px;
+            height: 48px;
+            background: linear-gradient(135deg, var(--primary-dark) 0%, var(--primary) 100%);
+            border-radius: 14px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.25rem;
+            box-shadow: var(--shadow-soft);
+            border: 1px solid rgba(255, 255, 255, 0.10);
+        }
+
+        .header-text h1 {
+            margin: 0;
+            font-size: 1.4rem;
+            font-weight: 650;
+            color: var(--text);
+            letter-spacing: -0.02em;
+        }
+
+        .header-text p {
+            margin: 0.25rem 0 0;
+            font-size: 0.875rem;
+            color: var(--text-muted);
+            max-width: 70ch;
+        }
+
+        .header-badge {
+            margin-left: auto;
+            background: rgba(45, 212, 191, 0.14);
+            color: var(--text);
+            border: 1px solid rgba(45, 212, 191, 0.25);
+            padding: 0.25rem 0.75rem;
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            font-weight: 500;
+            letter-spacing: 0.02em;
+        }
+
+        /* Swagger UI Overrides */
+        .swagger-ui {
+            background: transparent;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 1.25rem 2rem;
+        }
+
+        .swagger-ui .topbar {
+            display: none;
+        }
+
+        .swagger-ui .info {
+            margin: 1.75rem 0 1.25rem;
+        }
+
+        .swagger-ui .info .title {
+            font-family: inherit;
+            color: var(--text);
+            font-weight: 650;
+        }
+
+        .swagger-ui .info .description {
+            font-family: inherit;
+            color: var(--text-muted);
+        }
+
+        .swagger-ui .scheme-container {
+            background: rgba(19, 35, 59, 0.55);
+            box-shadow: none;
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 1rem;
+            backdrop-filter: blur(6px);
+        }
+
+        .swagger-ui .opblock {
+            background: rgba(15, 26, 46, 0.65);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            box-shadow: var(--shadow-soft);
+            margin-bottom: 1rem;
+            overflow: hidden;
+        }
+
+        .swagger-ui .opblock .opblock-summary {
+            border: none;
+            padding: 0.85rem 1rem;
+        }
+
+        .swagger-ui .opblock .opblock-summary-method {
+            font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+            font-weight: 700;
+            border-radius: 8px;
+            min-width: 70px;
+        }
+
+        .swagger-ui .opblock.opblock-get .opblock-summary-method {
+            background: rgba(34, 197, 94, 0.22);
+            color: #dcfce7;
+            border: 1px solid rgba(34, 197, 94, 0.35);
+        }
+
+        .swagger-ui .opblock.opblock-post .opblock-summary-method {
+            background: rgba(59, 130, 246, 0.22);
+            color: #dbeafe;
+            border: 1px solid rgba(59, 130, 246, 0.35);
+        }
+
+        .swagger-ui .opblock.opblock-get {
+            border-color: rgba(34, 197, 94, 0.35);
+            background: rgba(15, 26, 46, 0.65);
+        }
+
+        .swagger-ui .opblock.opblock-post {
+            border-color: rgba(59, 130, 246, 0.35);
+            background: rgba(15, 26, 46, 0.65);
+        }
+
+        .swagger-ui .opblock .opblock-summary-path {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+            color: var(--text);
+            font-size: 0.95rem;
+        }
+
+        .swagger-ui .opblock .opblock-summary-description {
+            color: var(--text-muted);
+            font-family: inherit;
+        }
+
+        .swagger-ui .opblock-body {
+            background: rgba(11, 18, 32, 0.35);
+        }
+
+        .swagger-ui .opblock-section-header {
+            background: rgba(19, 35, 59, 0.55);
+            border-bottom: 1px solid var(--border);
+        }
+
+        .swagger-ui .opblock-section-header h4 {
+            color: var(--text);
+            font-family: inherit;
+        }
+
+        .swagger-ui .parameter__name,
+        .swagger-ui .parameter__type,
+        .swagger-ui table thead tr th,
+        .swagger-ui table thead tr td,
+        .swagger-ui .response-col_status,
+        .swagger-ui .response-col_description {
+            color: var(--text);
+            font-family: inherit;
+        }
+
+        .swagger-ui .parameters-col_description {
+            color: var(--text-muted);
+        }
+
+        .swagger-ui .btn {
+            font-family: inherit;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+        }
+
+        .swagger-ui .btn.execute {
+            background: rgba(45, 212, 191, 0.18);
+            border-color: rgba(45, 212, 191, 0.35);
+            color: var(--text);
+        }
+
+        .swagger-ui .btn.execute:hover {
+            background: rgba(45, 212, 191, 0.26);
+        }
+
+        .swagger-ui select,
+        .swagger-ui input[type="text"],
+        .swagger-ui textarea {
+            background: rgba(11, 18, 32, 0.55);
+            border: 1px solid var(--border);
+            color: var(--text);
+            border-radius: 10px;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+            box-shadow: none;
+        }
+
+        .swagger-ui .model-box {
+            background: rgba(19, 35, 59, 0.55);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+        }
+
+        .swagger-ui .model {
+            color: var(--text);
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+        }
+
+        .swagger-ui .model-title {
+            color: var(--text);
+            font-family: inherit;
+        }
+
+        .swagger-ui .prop-type {
+            color: var(--accent);
+        }
+
+        .swagger-ui .prop-format {
+            color: var(--text-muted);
+        }
+
+        .swagger-ui section.models {
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            background: rgba(19, 35, 59, 0.45);
+            backdrop-filter: blur(6px);
+        }
+
+        .swagger-ui section.models h4 {
+            color: var(--text);
+            font-family: inherit;
+        }
+
+        .swagger-ui .responses-inner {
+            background: rgba(11, 18, 32, 0.35);
+        }
+
+        .swagger-ui .response {
+            background: rgba(19, 35, 59, 0.55);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+        }
+
+        .swagger-ui .highlight-code {
+            background: rgba(11, 18, 32, 0.55) !important;
+        }
+
+        .swagger-ui .highlight-code pre {
+            background: rgba(11, 18, 32, 0.55) !important;
+        }
+
+        .swagger-ui .microlight {
+            background: rgba(11, 18, 32, 0.55) !important;
+            color: var(--text) !important;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace !important;
+        }
+
+        .swagger-ui .copy-to-clipboard {
+            background: rgba(19, 35, 59, 0.55);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+        }
+
+        /* Hide info block title since we have header */
+        .swagger-ui .info hgroup.main {
+            display: none;
+        }
+
+        /* Scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: rgba(11, 18, 32, 0.55);
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: rgba(232, 237, 247, 0.18);
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: rgba(232, 237, 247, 0.28);
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="header-icon">⚡</div>
+        <div class="header-text">
+            <h1>nomic-serve</h1>
+            <p>Text embedding API powered by nomic-embed-text-v1.5</p>
+        </div>
+        <span class="header-badge">v0.1.0</span>
+    </div>
+    <div id="swagger-ui"></div>
+    <script src="https://unpkg.com/swagger-ui-dist@5.17.14/swagger-ui-bundle.js"></script>
+    <script>
+        window.onload = () => {
+            SwaggerUIBundle({
+                url: '/openapi.json',
+                dom_id: '#swagger-ui',
+                presets: [
+                    SwaggerUIBundle.presets.apis,
+                    SwaggerUIBundle.SwaggerUIStandalonePreset
+                ],
+                layout: 'BaseLayout',
+                deepLinking: true,
+                defaultModelsExpandDepth: 1,
+                defaultModelExpandDepth: 1,
+                displayRequestDuration: true,
+                filter: true,
+                showExtensions: true,
+                showCommonExtensions: true,
+                tryItOutEnabled: true,
+            });
+        };
+    </script>
+</body>
+</html>
+

@@ -20,13 +20,16 @@ WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
 
 # Create a dummy src to build dependencies
-RUN mkdir src && echo "fn main() {}" > src/main.rs
+RUN mkdir -p src static/swagger-ui && \
+    echo "fn main() {}" > src/main.rs && \
+    echo "<!-- placeholder -->" > static/swagger-ui/index.html
 
 # Build dependencies (cached layer)
-RUN cargo build --release && rm -rf src
+RUN cargo build --release && rm -rf src static
 
-# Copy source code
+# Copy source code and static files (needed for include_str! at compile time)
 COPY src ./src
+COPY static ./static
 
 # Build the actual binary
 RUN cargo build --release
@@ -59,7 +62,9 @@ COPY --from=builder /build/target/release/nomic-serve ./
 # Copy model files (use quantized by default)
 COPY model_quantized.onnx tokenizer.json ./
 
-# Default to CPU mode
+# Default configuration
+# CORS: Set CORS_ORIGINS="https://example.com,https://app.example.com" to customize
+#       Set DISABLE_CORS=1 to allow all origins
 ENV PORT=8080
 ENV MODEL=model_quantized.onnx
 ENV TOKENIZER=tokenizer.json
@@ -101,6 +106,8 @@ COPY model_quantized.onnx tokenizer.json ./
 # Note: The CUDA base image provides CUDA runtime libraries
 # ONNX Runtime providers will be loaded dynamically if available
 # If not found, server automatically falls back to CPU (see logs)
+# CORS: Set CORS_ORIGINS="https://example.com,https://app.example.com" to customize
+#       Set DISABLE_CORS=1 to allow all origins
 ENV PORT=8080
 ENV MODEL=model_quantized.onnx
 ENV TOKENIZER=tokenizer.json

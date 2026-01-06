@@ -2,7 +2,7 @@
 # nomic-serve Makefile
 # ==============================================================================
 
-.PHONY: model fmt build clean run health test test-list models-all test-models \
+.PHONY: model fmt build clean run health docs openapi test test-list models-all test-models \
         docker-build docker-build-cpu docker-build-gpu docker-push docker-push-cpu docker-push-gpu
 
 # ==============================================================================
@@ -43,7 +43,7 @@ models-all: tokenizer.json model_quantized.onnx model_q4f16.onnx model_fp16.onnx
 fmt:
 	cargo fmt
 
-target/release/nomic-serve: src/main.rs Cargo.toml
+target/release/nomic-serve: src/main.rs Cargo.toml static/swagger-ui/index.html
 	cargo build --release
 
 build: fmt target/release/nomic-serve
@@ -64,7 +64,14 @@ run: build
 # ==============================================================================
 
 health:
-	@curl -s http://localhost:8080/health && echo ""
+	@curl -s http://localhost:8080/health | jq .
+
+docs:
+	@echo "Opening docs at http://localhost:8080/docs"
+	@curl -s -o /dev/null -w "HTTP %{http_code}\n" http://localhost:8080/docs
+
+openapi:
+	@curl -s http://localhost:8080/openapi.json | jq '.info'
 
 test:
 	@curl -s -X POST localhost:8080/embed \

@@ -22,31 +22,55 @@ curl -X POST localhost:8080/embed \
 
 ## API
 
+Interactive documentation available at `/docs` (Swagger UI).
+
 ### `GET /health`
-Returns `OK` with status 200.
+Returns health status.
+
+**Response:**
+```json
+{"status": "OK"}
+```
 
 ### `POST /embed`
-Generate embeddings for one or more texts.
+Generate embedding for a single text.
 
 **Request:**
 ```json
 {"inputs": "Hello world"}
-// or
+```
+
+**Response:**
+```json
+{
+  "embedding": [0.123, 0.456, ...],
+  "tokens": 4,
+  "time_ms": 12.34
+}
+```
+
+### `POST /batch`
+Generate embeddings for multiple texts.
+
+**Request:**
+```json
 {"inputs": ["Hello world", "Goodbye world"]}
 ```
 
 **Response:**
 ```json
 {
-  "embeddings": [[0.123, 0.456, ...]],
-  "tokens": [4],
-  "time_ms": 12.34
+  "embeddings": [[0.123, 0.456, ...], [0.789, -0.123, ...]],
+  "tokens": [4, 5],
+  "time_ms": 45.67
 }
 ```
 
-- `embeddings`: Array of 768-dimensional vectors (one per input)
-- `tokens`: Token count for each input
-- `time_ms`: Total processing time in milliseconds
+### `GET /docs`
+Swagger UI documentation page.
+
+### `GET /openapi.json`
+OpenAPI 3.1.0 schema.
 
 ## Configuration
 
@@ -55,6 +79,38 @@ Generate embeddings for one or more texts.
 | `PORT` | `8080` | Server port |
 | `MODEL` | `model_quantized.onnx` | Path to ONNX model |
 | `TOKENIZER` | `tokenizer.json` | Path to tokenizer |
+| `USE_GPU` | `false` | Enable GPU inference (`1` or `true`) |
+| `DISABLE_CORS` | `false` | Disable CORS entirely (`1` or `true`) |
+| `CORS_ORIGINS` | *(see below)* | Comma-separated list of allowed origins |
+
+### CORS Configuration
+
+By default, the server allows requests from localhost only (for local development):
+- `http://localhost:3000` / `http://localhost:8080`
+- `http://127.0.0.1:3000` / `http://127.0.0.1:8080`
+
+**Production deployment** - set allowed origins explicitly:
+```bash
+# Allow specific origins (comma-separated, no wildcards)
+CORS_ORIGINS="https://example.com,https://app.example.com,https://api.example.com" ./nomic-serve
+
+# Docker
+docker run -p 8080:8080 \
+  -e CORS_ORIGINS="https://example.com,https://app.example.com" \
+  mindthemath/nomic-text-v1.5-rs:latest-cpu
+```
+
+**Security notes:**
+- Origins must be explicitly listed (no wildcard support)
+- If `CORS_ORIGINS` is set but contains invalid values, falls back to localhost defaults (never permissive)
+- Invalid origins are silently ignored and logged
+
+**Disable CORS entirely** (allows all origins - use only for internal APIs):
+```bash
+DISABLE_CORS=1 ./nomic-serve
+```
+
+To modify the default allowed origins, edit `DEFAULT_CORS_ORIGINS` in `src/main.rs`.
 
 ---
 
