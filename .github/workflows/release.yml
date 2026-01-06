@@ -150,7 +150,7 @@ jobs:
           cp target/release/nomic-serve release/nomic-embed-v1-5-${VERSION}-${{ matrix.artifact }}/
           cp -r models release/nomic-embed-v1-5-${VERSION}-${{ matrix.artifact }}/
           cd release
-          tar -czvf nomic-embed-v1-5-${VERSION}-${{ matrix.artifact }}.tar.gz nomic-embed-v1-5-${VERSION}-${{ matrix.artifact }}
+          tar -czvf ../nomic-embed-v1-5-${VERSION}-${{ matrix.artifact }}.tar.gz nomic-embed-v1-5-${VERSION}-${{ matrix.artifact }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
