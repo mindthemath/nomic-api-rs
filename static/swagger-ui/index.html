@@ -125,6 +125,17 @@
             padding: 1rem;
             backdrop-filter: blur(6px);
         }
+        /* "Server" header strip + inner bar */
+        .swagger-ui .scheme-container .schemes,
+        .swagger-ui .scheme-container .auth-wrapper {
+            background: rgba(11, 18, 32, 0.35) !important;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+        }
+        .swagger-ui .scheme-container .schemes-title,
+        .swagger-ui .scheme-container label {
+            color: var(--text) !important;
+        }
 
         .swagger-ui .opblock {
             background: rgba(15, 26, 46, 0.65);
@@ -184,9 +195,18 @@
             background: rgba(11, 18, 32, 0.35);
         }
 
+        /* "Parameters" / "Request body" header strips */
+        .swagger-ui .opblock .opblock-section-header,
         .swagger-ui .opblock-section-header {
-            background: rgba(19, 35, 59, 0.55);
-            border-bottom: 1px solid var(--border);
+            background: rgba(11, 18, 32, 0.35) !important;
+            border-bottom: 1px solid var(--border) !important;
+            box-shadow: none !important;
+        }
+        .swagger-ui .opblock-section-header label,
+        .swagger-ui .opblock-section-header h4,
+        .swagger-ui .opblock-section-header .tab-item,
+        .swagger-ui .opblock-section-header .tab-item button {
+            color: var(--text) !important;
         }
 
         .swagger-ui .opblock-section-header h4 {
@@ -269,6 +289,100 @@
         .swagger-ui section.models h4 {
             color: var(--text);
             font-family: inherit;
+        }
+
+        /* Schemas panel readability (Swagger UI v5 uses JSON Schema 2020-12 components) */
+        .swagger-ui article.json-schema-2020-12 {
+            background: rgba(19, 35, 59, 0.4) !important;
+            border: 1px solid var(--border) !important;
+            border-radius: 10px;
+            overflow: hidden;
+            margin-bottom: 0.75rem;
+        }
+
+        .swagger-ui .json-schema-2020-12-head {
+            background: rgba(15, 26, 46, 0.6) !important;
+            border-bottom: 1px solid var(--border) !important;
+            padding: 0.75rem 1rem !important;
+        }
+
+        .swagger-ui .json-schema-2020-12-body {
+            background: rgba(11, 18, 32, 0.3) !important;
+            padding: 0.75rem 1rem !important;
+        }
+
+        /* Title chip (BatchRequest, EmbedResponse, ...) - readable but not harsh */
+        .swagger-ui .json-schema-2020-12__title {
+            color: var(--text) !important;
+            background: transparent !important;
+            border: none !important;
+            border-radius: 0 !important;
+            padding: 0 !important;
+            font-weight: 600;
+            font-size: 0.9rem;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace !important;
+        }
+
+        /* Type badge (object, string, ...) - softer colors */
+        .swagger-ui .json-schema-2020-12__attribute {
+            color: var(--accent) !important;
+            background: rgba(125, 211, 252, 0.15) !important;
+            border: 1px solid rgba(125, 211, 252, 0.25) !important;
+            border-radius: 6px !important;
+            padding: 0.2rem 0.5rem !important;
+            font-size: 0.8rem;
+            font-weight: 500;
+        }
+
+        /* Property rows */
+        .swagger-ui .json-schema-2020-12-property {
+            border-bottom: 1px solid rgba(232, 237, 247, 0.08) !important;
+            padding: 0.5rem 0 !important;
+        }
+        .swagger-ui .json-schema-2020-12-property:last-child {
+            border-bottom: none !important;
+        }
+
+        /* Keyword labels + value text */
+        .swagger-ui .json-schema-2020-12-keyword__name {
+            color: var(--text-muted) !important;
+            font-weight: 500;
+            letter-spacing: 0.01em;
+        }
+        .swagger-ui .json-schema-2020-12-keyword__value,
+        .swagger-ui .json-schema-2020-12__description {
+            color: var(--text) !important;
+        }
+
+        /* Expand/Collapse buttons - softer, readable */
+        .swagger-ui .json-schema-2020-12-expand-deep-button {
+            color: var(--text) !important;
+            background: rgba(45, 212, 191, 0.18) !important;
+            border: 1px solid rgba(45, 212, 191, 0.3) !important;
+            border-radius: 6px !important;
+            padding: 0.3rem 0.65rem !important;
+            font-size: 0.8rem;
+            font-weight: 500;
+        }
+        .swagger-ui .json-schema-2020-12-expand-deep-button:hover {
+            background: rgba(45, 212, 191, 0.25) !important;
+            border-color: rgba(45, 212, 191, 0.4) !important;
+        }
+
+        /* Accordion button (the clickable schema row) */
+        .swagger-ui .json-schema-2020-12-accordion {
+            color: var(--text) !important;
+            background: transparent !important;
+        }
+        .swagger-ui .json-schema-2020-12-accordion__children {
+            background: transparent !important;
+        }
+
+        /* Chevron icons in schemas */
+        .swagger-ui .json-schema-2020-12-accordion svg,
+        .swagger-ui .json-schema-2020-12-expand-deep-button svg {
+            fill: currentColor !important;
+            color: var(--text-muted) !important;
         }
 
         .swagger-ui .responses-inner {
