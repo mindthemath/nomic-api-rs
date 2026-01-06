@@ -54,14 +54,16 @@ struct AppState {
 }
 
 #[derive(Deserialize)]
-struct EmbedRequest {
-    inputs: String,
+#[serde(untagged)]
+enum EmbedRequest {
+    Single { inputs: String },
+    Multiple { inputs: Vec<String> },
 }
 
 #[derive(Serialize)]
 struct EmbedResponse {
-    embeddings: Vec<f32>,
-    tokens: usize,
+    embeddings: Vec<Vec<f32>>,
+    tokens: Vec<usize>,
     time_ms: f64,
 }
 
@@ -108,14 +110,10 @@ async fn health_handler() -> &'static str {
     "OK"
 }
 
-async fn embed_handler(
-    State(state): State<AppState>,
-    Json(req): Json<EmbedRequest>,
-) -> Result<Json<EmbedResponse>, Error> {
-    let start = Instant::now();
+fn embed_single_text(state: &AppState, text: &str) -> Result<(Vec<f32>, usize), Error> {
     let encoding = state
         .tokenizer
-        .encode(req.inputs, true)
+        .encode(text, true)
         .map_err(|e| Error(StatusCode::BAD_REQUEST, e.to_string()))?;
     let ids: Vec<i64> = encoding.get_ids().iter().map(|&i| i as i64).collect();
     let tokens = ids.len();
@@ -174,7 +172,7 @@ async fn embed_handler(
             let mut pooled = vec![0.0f32; 768];
             let num_tokens = *num_tokens;
             let mut mask_sum = 0.0f32;
-            
+
             for (i, &mask_val) in attention_mask.iter().enumerate().take(num_tokens) {
                 if mask_val > 0 {
                     mask_sum += 1.0;
@@ -200,9 +198,33 @@ async fn embed_handler(
         }
     };
 
+    Ok((embedding, tokens))
+}
+
+async fn embed_handler(
+    State(state): State<AppState>,
+    Json(req): Json<EmbedRequest>,
+) -> Result<Json<EmbedResponse>, Error> {
+    let start = Instant::now();
+
+    // Handle both single string and list of strings
+    let texts = match req {
+        EmbedRequest::Single { inputs } => vec![inputs],
+        EmbedRequest::Multiple { inputs } => inputs,
+    };
+
+    let mut all_embeddings = Vec::new();
+    let mut all_tokens = Vec::new();
+
+    for text in texts {
+        let (embedding, tokens) = embed_single_text(&state, &text)?;
+        all_embeddings.push(embedding);
+        all_tokens.push(tokens);
+    }
+
     Ok(Json(EmbedResponse {
-        embeddings: embedding,
-        tokens,
+        embeddings: all_embeddings,
+        tokens: all_tokens,
         time_ms: start.elapsed().as_secs_f64() * 1000.0,
     }))
 }
