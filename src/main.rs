@@ -753,8 +753,18 @@ async fn img_embed_handler(
         ));
     }
 
+    let decode_start = Instant::now();
     let image = decode_image(&req.content).await?;
+    let decode_time = decode_start.elapsed();
+    
+    let inference_start = Instant::now();
     let mut embedding = embed_image(vision_state, &image)?;
+    let inference_time = inference_start.elapsed();
+    
+    info!("Image embed timing - decode: {:.2}ms, inference: {:.2}ms, total: {:.2}ms", 
+          decode_time.as_secs_f64() * 1000.0,
+          inference_time.as_secs_f64() * 1000.0,
+          start.elapsed().as_secs_f64() * 1000.0);
 
     if req.dim < embedding.len() {
         embedding.truncate(req.dim);
@@ -901,6 +911,7 @@ async fn decode_image(content: &str) -> Result<DynamicImage, Error> {
 
 /// Fetch image from URL with timeout and size limit
 async fn fetch_image_url(url: &str) -> Result<Vec<u8>, Error> {
+    let client_start = Instant::now();
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()
@@ -910,13 +921,22 @@ async fn fetch_image_url(url: &str) -> Result<Vec<u8>, Error> {
                 format!("HTTP client error: {}", e),
             )
         })?;
-
+    let client_time = client_start.elapsed();
+    
+    let request_start = Instant::now();
     let response = client.get(url).send().await.map_err(|e| {
+        let request_time = request_start.elapsed();
+        info!("Image fetch failed after {:.2}ms (client build: {:.2}ms) - {}", 
+              request_time.as_secs_f64() * 1000.0,
+              client_time.as_secs_f64() * 1000.0,
+              e);
         Error(
             StatusCode::BAD_REQUEST,
             format!("Failed to fetch URL: {}", e),
         )
     })?;
+    let request_time = request_start.elapsed();
+    info!("Image fetch - request sent in {:.2}ms", request_time.as_secs_f64() * 1000.0);
 
     if !response.status().is_success() {
         return Err(Error(
@@ -939,12 +959,23 @@ async fn fetch_image_url(url: &str) -> Result<Vec<u8>, Error> {
         }
     }
 
-    response.bytes().await.map(|b| b.to_vec()).map_err(|e| {
+    let body_start = Instant::now();
+    let request_time_clone = request_time;
+    let result = response.bytes().await.map(|b| {
+        let body_time = body_start.elapsed();
+        let total_time = request_time_clone + body_time;
+        info!("Image fetch - body downloaded in {:.2}ms (request: {:.2}ms, total: {:.2}ms)", 
+              body_time.as_secs_f64() * 1000.0,
+              request_time_clone.as_secs_f64() * 1000.0,
+              total_time.as_secs_f64() * 1000.0);
+        b.to_vec()
+    }).map_err(|e| {
         Error(
             StatusCode::BAD_REQUEST,
             format!("Failed to read image data: {}", e),
         )
-    })
+    });
+    result
 }
 
 // ============================================================================
@@ -1106,7 +1137,9 @@ fn l2_normalize(vec: &mut Vec<f32>) {
 
 /// Embed single image, returns 768-dim L2-normalized embedding
 fn embed_image(state: &VisionState, image: &DynamicImage) -> Result<Vec<f32>, Error> {
+    let preprocess_start = Instant::now();
     let tensor = preprocess_image(image);
+    let preprocess_time = preprocess_start.elapsed();
 
     // Create input tensor with shape [1, 3, 224, 224]
     let input_shape = vec![1i64, 3, IMAGE_SIZE as i64, IMAGE_SIZE as i64];
@@ -1118,8 +1151,14 @@ fn embed_image(state: &VisionState, image: &DynamicImage) -> Result<Vec<f32>, Er
         SessionInputValue::from(pixel_values),
     );
 
+    let inference_start = Instant::now();
     let mut session_guard = state.session.lock().unwrap();
     let outputs = session_guard.run(SessionInputs::from(inputs_map))?;
+    let inference_time = inference_start.elapsed();
+    
+    info!("Vision inference timing - preprocess: {:.2}ms, ONNX: {:.2}ms", 
+          preprocess_time.as_secs_f64() * 1000.0,
+          inference_time.as_secs_f64() * 1000.0);
     let (output_shape, raw_output) = outputs[0].try_extract_tensor::<f32>()?.to_owned();
 
     let output_vec = raw_output.to_vec();
