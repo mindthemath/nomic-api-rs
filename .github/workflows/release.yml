@@ -44,7 +44,7 @@ jobs:
       - name: Download model files (using makefile)
         run: |
           # Download all model variants (makefile handles this)
-          make model-txt-all model-img-all
+          make model-txt model-img
 
       - name: Build image (using makefile)
         run: |
