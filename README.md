@@ -230,6 +230,61 @@ make test-list # Test multiple embeddings
 make health   # Health check
 ```
 
+### Model Variant Comparison
+
+Compare different ONNX model quantizations against the **fp32 baseline** (full precision, unquantized):
+
+```bash
+# Download all model variants
+make models-all
+
+# Run comparison tests (starts multiple servers, runs tests, cleans up)
+make test-models
+```
+
+This will:
+1. Start servers for each model variant on different ports (8080-8083)
+   - Port 8080: `model.onnx` (fp32, **baseline**)
+   - Port 8081: `model_quantized.onnx` (quantized)
+   - Port 8082: `model_q4f16.onnx` (4-bit quantized)
+   - Port 8083: `model_fp16.onnx` (half precision)
+2. Run the same test texts through each model
+3. Compare embeddings using:
+   - **Cosine similarity**: 1.0 = identical, 0.95+ = very similar, <0.9 = different
+   - **L2 distance**: Lower is better (0 = identical)
+   - **Max/mean absolute differences**: Per-dimension differences
+   - **Latency**: Speed comparison
+
+**Interpreting Results:**
+- **Cosine similarity > 0.95**: Embeddings are very similar, quantization quality is good
+- **Cosine similarity 0.9-0.95**: Moderate differences, may affect fine-grained tasks
+- **Cosine similarity < 0.9**: Significant differences, may not be suitable for production
+- **Speedup > 1.0**: Faster than baseline (good!)
+- **Speedup < 1.0**: Slower than baseline (quantization overhead)
+
+**⚠️ Important: CPU vs GPU Quantization Performance**
+
+Quantization benefits are **primarily on GPU/TPU**, not CPU:
+
+- **On GPU**: Quantized models (INT8, INT4) can be 2-4x faster due to:
+  - Specialized tensor cores (e.g., NVIDIA's INT8 cores)
+  - Reduced memory bandwidth (smaller model size)
+  - Optimized quantized kernels
+
+- **On CPU**: Quantized models are often **slower** because:
+  - CPUs lack specialized INT4/INT8 instructions
+  - Dequantization overhead negates benefits
+  - ONNX Runtime CPU execution provider may not optimize quantized ops
+  - Memory bandwidth is rarely the bottleneck on CPU
+
+**Recommendation for CPU inference**: Use **fp32 (`model.onnx`)** for best performance. The quantized models are smaller on disk but don't provide speedups on CPU.
+
+**Note**: If `model_quantized.onnx` shows identical results to fp32 (cosine 1.0), it may be using a lossless quantization scheme or the ONNX Runtime is automatically dequantizing to fp32 for CPU execution.
+
+**Requirements**: Python with `requests` library (`pip install requests` or `pip install -r scripts/requirements.txt`)
+
+The comparison script handles server lifecycle automatically - starts servers, waits for readiness, runs tests, and cleans up on exit (including Ctrl-C).
+
 ## Model Info
 
 - **Model**: [nomic-ai/nomic-embed-text-v1.5](https://huggingface.co/nomic-ai/nomic-embed-text-v1.5)

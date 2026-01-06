@@ -2,7 +2,7 @@
 # nomic-serve Makefile
 # ==============================================================================
 
-.PHONY: model fmt build clean run health test test-list
+.PHONY: model fmt build clean run health test test-list models-all test-models
 
 # ==============================================================================
 # Model Files
@@ -16,8 +16,24 @@ model_quantized.onnx:
 	wget --content-disposition -q \
 		https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/resolve/main/onnx/model_quantized.onnx
 
+model_q4f16.onnx:
+	wget --content-disposition -q \
+		https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/resolve/main/onnx/model_q4f16.onnx
+
+model_fp16.onnx:
+	wget --content-disposition -q \
+		https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/resolve/main/onnx/model_fp16.onnx
+
+model.onnx:
+	wget --content-disposition -q \
+		https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/resolve/main/onnx/model.onnx
+
 model: tokenizer.json model_quantized.onnx
 	@echo "✓ Model files ready"
+
+# Download all model variants for comparison
+models-all: tokenizer.json model_quantized.onnx model_q4f16.onnx model_fp16.onnx model.onnx
+	@echo "✓ All model variants downloaded"
 
 # ==============================================================================
 # Build
@@ -60,3 +76,9 @@ test-list:
 		-H 'content-type: application/json' \
 		-d '{"inputs": ["ONNX in Rust is fast", "Python is also great", "Embeddings are useful"]}' | \
 		jq '{count: (.embeddings | length), tokens, time_ms: (.time_ms | floor), samples: [.embeddings[] | .[0:3] | map(. * 1000 | floor / 1000)]}'
+
+# Compare all model variants against baseline (model_quantized.onnx)
+# Requires: models-all, build, and Python requests library
+test-models: build models-all
+	@echo "Starting model variant comparison..."
+	@bash scripts/run_model_comparison.sh
