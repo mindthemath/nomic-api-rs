@@ -639,11 +639,192 @@ def postprocess_embedding(hidden_states: np.ndarray, dim: int = 768) -> np.ndarr
 
 ---
 
+## What Makes Nomic Embed Different?
+
+While nomic-embed-vision uses CLIP-style preprocessing, there are significant architectural and training innovations that distinguish it from OpenAI's CLIP.
+
+### 1. Unified Text-Image Embedding Space
+
+**The key innovation**: nomic-embed-vision shares the **exact same embedding space** as nomic-embed-text.
+
+This means:
+- Text and images can be directly compared with cosine similarity
+- No separate alignment step needed for multimodal retrieval
+- A query like `"search_query: red sports car"` will match images of red sports cars
+
+```python
+# Multimodal search is direct - no magic required
+text_embedding = embed_text("search_query: red sports car")
+image_embedding = embed_image(car_photo)
+similarity = dot(text_embedding, image_embedding)  # Works directly!
+```
+
+**How did they achieve this?** Using "Locked-Text Tuning" (inverted LiT).
+
+### 2. Inverted LiT Training Strategy
+
+Traditional **LiT (Locked-image Text tuning)** from Google (2021):
+- Lock the pre-trained image encoder
+- Train only the text encoder to align with it
+- Image encoder never changes
+
+Nomic's **inverted approach**:
+- Lock the pre-trained **text** encoder (nomic-embed-text-v1.5)
+- Train only the **vision** encoder to align with it
+- Text encoder never changes
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ Traditional LiT (Google)           │ Inverted LiT (Nomic)       │
+├─────────────────────────────────────────────────────────────────┤
+│                                    │                            │
+│  Image Encoder: FROZEN ❄️          │  Image Encoder: TRAINED 🔥 │
+│  Text Encoder:  TRAINED 🔥         │  Text Encoder:  FROZEN ❄️  │
+│                                    │                            │
+│  Result: Text aligns to images     │  Result: Images align to   │
+│                                    │          existing text     │
+│                                    │          embedding space   │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Why invert?** Because nomic-embed-text-v1.5 was already a high-performing text embedder. By locking it and training vision to match, they:
+1. Preserve all existing text embedding quality
+2. Ensure perfect compatibility with existing text embeddings
+3. Allow drop-in multimodal upgrades to text-only systems
+
+### 3. NomicBERT Architecture (Not Standard ViT)
+
+The vision encoder uses **NomicBERT**, a custom architecture with modern optimizations:
+
+| Feature | Standard ViT-B/16 | NomicBERT (Vision) |
+|---------|-------------------|-------------------|
+| **Activation** | GELU | **SwiGLU** |
+| **Attention** | Standard | **Flash Attention** |
+| **Normalization** | Post-LayerNorm | **Pre-LayerNorm** |
+| **FFN size** | 3072 (4×768) | **2048** (smaller) |
+| **Position embedding** | Learned | Learned (rotary disabled) |
+| **Fused operations** | No | **Yes** (bias+FC, dropout+LN) |
+
+**SwiGLU activation** (from LLaMA):
+```python
+# Standard GELU (CLIP/ViT)
+ffn_out = Linear(GELU(Linear(x)))
+
+# SwiGLU (Nomic)
+ffn_out = Linear(SiLU(Linear(x)) * Linear(x))  # Gated activation
+```
+
+SwiGLU typically improves performance at the cost of ~50% more FFN parameters, but Nomic compensates with a smaller FFN dimension.
+
+**Flash Attention**: Built-in support for memory-efficient exact attention. Enables training on longer sequences without memory issues.
+
+### 4. Matryoshka Representation Learning
+
+Both text and vision models are trained with **Matryoshka loss**, allowing the embedding to be truncated to smaller dimensions while maintaining usefulness.
+
+```
+768-dim: [████████████████████████████████] Full quality
+512-dim: [███████████████████████]          ~99% quality  
+256-dim: [███████████████]                  ~97% quality
+128-dim: [████████]                         ~94% quality
+64-dim:  [████]                             ~88% quality
+```
+
+**How it works**: During training, the loss is computed at multiple truncation points simultaneously:
+```python
+# Simplified Matryoshka loss
+total_loss = 0
+for dim in [64, 128, 256, 512, 768]:
+    truncated_emb = embedding[:dim]
+    total_loss += contrastive_loss(truncated_emb)
+```
+
+This forces early dimensions to capture the most important information.
+
+### 5. Open Training Data
+
+Unlike OpenAI's CLIP (trained on private 400M image-text pairs), Nomic releases:
+
+- **Full training code**: [`github.com/nomic-ai/contrastors`](https://github.com/nomic-ai/contrastors)
+- **Training data access**: Available via their data API
+- **Data visualization**: Interactive maps on Atlas
+
+**Training stages** (for text model, vision follows similar approach):
+
+1. **Unsupervised contrastive pretraining**:
+   - Question-answer pairs (StackExchange, Quora)
+   - Title-body pairs (Amazon reviews)
+   - Article-summary pairs (news)
+   
+2. **Supervised finetuning**:
+   - Search queries → relevant documents
+   - Hard negative mining for quality
+
+### 6. Architectural Config Comparison
+
+Inspecting the actual model reveals these parameters:
+
+```python
+# nomic-embed-vision-v1.5 config (extracted from model)
+{
+    "model_type": "nomic_bert",
+    "n_embd": 768,           # Hidden size
+    "n_head": 12,            # Attention heads
+    "n_layer": 12,           # Transformer layers
+    "n_inner": 2048,         # FFN intermediate (vs 3072 for BERT)
+    "img_size": 224,
+    "patch_size": 16,
+    "num_channels": 3,
+    
+    # Modern optimizations
+    "activation_function": "swiglu",
+    "use_flash_attn": True,
+    "prenorm": True,          # Pre-LayerNorm
+    "fused_bias_fc": True,    # Fused operations
+    "fused_dropout_add_ln": True,
+    
+    # Disabled features (interesting)
+    "rotary_emb_fraction": 0,  # No rotary for vision
+    "use_rms_norm": False,     # LayerNorm, not RMSNorm
+}
+```
+
+### 7. Performance Comparison
+
+From the model card benchmarks:
+
+| Model | ImageNet 0-shot | Datacomp (Avg) | MTEB |
+|-------|-----------------|----------------|------|
+| **nomic-embed-vision-v1.5** | **71.0** | **56.8** | 62.28 |
+| nomic-embed-vision-v1 | 70.7 | 56.7 | **62.39** |
+| OpenAI CLIP ViT-B/16 | 68.3 | 56.3 | 43.82 |
+| Jina CLIP v1 | 59.1 | 52.2 | 60.1 |
+
+Key wins:
+- +2.7% on ImageNet zero-shot vs OpenAI CLIP
+- +18.5 MTEB score (massive improvement in retrieval tasks)
+
+### Summary of Nomic Innovations
+
+1. **Inverted LiT**: Train vision to match locked text encoder
+2. **Unified embedding space**: Text and images are directly comparable
+3. **NomicBERT architecture**: SwiGLU, Flash Attention, fused ops
+4. **Matryoshka embeddings**: Flexible dimension truncation
+5. **Open everything**: Code, data, and model weights
+
+These innovations allow nomic-embed to achieve state-of-the-art performance while being fully open and reproducible.
+
+---
+
 ## References
 
 1. [CLIP Paper](https://arxiv.org/abs/2103.00020) - Radford et al., 2021
 2. [ViT Paper](https://arxiv.org/abs/2010.11929) - Dosovitskiy et al., 2020
 3. [Matryoshka Representation Learning](https://arxiv.org/abs/2205.13147) - Kusupati et al., 2022
-4. [nomic-embed-vision-v1.5](https://huggingface.co/nomic-ai/nomic-embed-vision-v1.5) - Nomic AI
-5. [preprocessor_config.json](../models/img/preprocessor_config.json) - Model configuration
+4. [LiT: Zero-Shot Transfer with Locked-image Text Tuning](https://arxiv.org/abs/2111.07991) - Zhai et al., 2021
+5. [Nomic Embed Text Technical Report](https://arxiv.org/abs/2402.01613) - Nussbaum et al., 2024
+6. [Nomic Embed Vision Technical Report](https://arxiv.org/abs/2406.18587) - Nussbaum et al., 2024
+7. [nomic-embed-vision-v1.5 Model Card](https://huggingface.co/nomic-ai/nomic-embed-vision-v1.5) - Nomic AI
+8. [contrastors Training Code](https://github.com/nomic-ai/contrastors) - Nomic AI
+9. [preprocessor_config.json](../models/img/preprocessor_config.json) - Model configuration
 
