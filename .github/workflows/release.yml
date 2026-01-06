@@ -54,6 +54,15 @@ jobs:
             bash scripts/download_vision_models.sh fp32
           fi
 
+      - name: Verify model files exist
+        run: |
+          # Verify the required model files exist before building
+          echo "Verifying model files for build..."
+          ls -lh models/txt/${{ matrix.txt_model }}
+          ls -lh models/txt/tokenizer.json
+          ls -lh models/img/${{ matrix.img_model }}
+          echo "✓ All required model files present"
+
       - name: Build image
         run: |
           # Build directly with docker (matching makefile approach but bypassing dependencies)

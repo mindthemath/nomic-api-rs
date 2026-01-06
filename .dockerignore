@@ -22,11 +22,14 @@ NOTES
 .venv/
 __pycache__/
 
-# Ignore all model files except quantized ones we need
+# Ignore all model files except the ones we need (quantized or full precision)
+# Allow both model_quantized.onnx and model.onnx (selected via build args)
 models/txt/*.onnx
 !models/txt/model_quantized.onnx
+!models/txt/model.onnx
 models/img/*.onnx
 !models/img/model_quantized.onnx
+!models/img/model.onnx
 
 # Keep tokenizer.json (text model) and preprocessor_config.json (vision model)
 # These are NOT ignored - they're needed at runtime
