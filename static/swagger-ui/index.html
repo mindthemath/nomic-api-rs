@@ -385,6 +385,40 @@
             color: var(--text-muted) !important;
         }
 
+        /* Arrow icons - make them gray for visibility on dark background */
+        .swagger-ui button.expand-operation svg,
+        .swagger-ui button.opblock-control-arrow svg,
+        .swagger-ui button.model-control svg,
+        .swagger-ui section.model button svg,
+        .swagger-ui .model-control svg,
+        .swagger-ui section.models section.model button svg,
+        .swagger-ui section.models section.model h4 button svg,
+        .swagger-ui .opblock-tag-section button.expand-operation svg,
+        .swagger-ui .opblock-summary button.opblock-control-arrow svg {
+            fill: var(--text-muted) !important;
+            stroke: var(--text-muted) !important;
+            color: var(--text-muted) !important;
+        }
+        
+        /* Target SVG elements directly in model sections */
+        .swagger-ui section.model svg,
+        .swagger-ui section.models svg {
+            fill: var(--text-muted) !important;
+            stroke: var(--text-muted) !important;
+        }
+        
+        /* Target arrow SVGs by viewBox attribute (Swagger UI arrow icons) */
+        .swagger-ui svg[viewBox="0 0 20 20"] {
+            fill: var(--text-muted) !important;
+            stroke: var(--text-muted) !important;
+        }
+        
+        /* Override any inline styles on arrow buttons */
+        .swagger-ui button svg[viewBox="0 0 20 20"] {
+            fill: var(--text-muted) !important;
+            stroke: var(--text-muted) !important;
+        }
+
         .swagger-ui .responses-inner {
             background: rgba(11, 18, 32, 0.35);
         }
@@ -474,4 +508,5 @@
     </script>
 </body>
 </html>
+
 
