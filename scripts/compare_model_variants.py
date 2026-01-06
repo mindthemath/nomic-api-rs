@@ -62,7 +62,14 @@ def get_embedding(port: int, text: str) -> Tuple[List[float], float]:
     response.raise_for_status()
     data = response.json()
     latency = (time.time() - start) * 1000
-    return data["embeddings"][0], latency
+    
+    if "embedding" not in data:
+        if "error" in data:
+            raise ValueError(f"Server error on port {port}: {data['error']}")
+        else:
+            raise ValueError(f"Unexpected response format from port {port}. Keys: {list(data.keys())}. Response: {data}")
+    
+    return data["embedding"], latency
 
 
 def compare_models(

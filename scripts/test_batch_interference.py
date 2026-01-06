@@ -62,8 +62,8 @@ def main():
     print("=" * 70)
     
     # Load model and tokenizer
-    session = ort.InferenceSession("model_quantized.onnx")
-    tokenizer = Tokenizer.from_file("tokenizer.json")
+    session = ort.InferenceSession("models/model_quantized.onnx")
+    tokenizer = Tokenizer.from_file("models/tokenizer.json")
     
     # Test texts with varying token counts
     texts = [

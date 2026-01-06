@@ -9,31 +9,41 @@
 # Model Files
 # ==============================================================================
 
-tokenizer.json:
+models/tokenizer.json:
+	@mkdir -p models
 	wget --content-disposition -q \
+		-O models/tokenizer.json \
 		https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/resolve/main/tokenizer.json
 
-model_quantized.onnx:
+models/model_quantized.onnx:
+	@mkdir -p models
 	wget --content-disposition -q \
+		-O models/model_quantized.onnx \
 		https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/resolve/main/onnx/model_quantized.onnx
 
-model_q4f16.onnx:
+models/model_q4f16.onnx:
+	@mkdir -p models
 	wget --content-disposition -q \
+		-O models/model_q4f16.onnx \
 		https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/resolve/main/onnx/model_q4f16.onnx
 
-model_fp16.onnx:
+models/model_fp16.onnx:
+	@mkdir -p models
 	wget --content-disposition -q \
+		-O models/model_fp16.onnx \
 		https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/resolve/main/onnx/model_fp16.onnx
 
-model.onnx:
+models/model.onnx:
+	@mkdir -p models
 	wget --content-disposition -q \
+		-O models/model.onnx \
 		https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/resolve/main/onnx/model.onnx
 
-model: tokenizer.json model_quantized.onnx
+model: models/tokenizer.json models/model_quantized.onnx
 	@echo "✓ Model files ready"
 
 # Download all model variants for comparison
-models-all: tokenizer.json model_quantized.onnx model_q4f16.onnx model_fp16.onnx model.onnx
+models-all: models/tokenizer.json models/model_quantized.onnx models/model_q4f16.onnx models/model_fp16.onnx models/model.onnx
 	@echo "✓ All model variants downloaded"
 
 # ==============================================================================

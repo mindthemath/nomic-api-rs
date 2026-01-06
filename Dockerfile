@@ -60,14 +60,14 @@ WORKDIR /app
 COPY --from=builder /build/target/release/nomic-serve ./
 
 # Copy model files (use quantized by default)
-COPY model_quantized.onnx tokenizer.json ./
+COPY models/model_quantized.onnx models/tokenizer.json models/
 
 # Default configuration
 # CORS: Set CORS_ORIGINS="https://example.com,https://app.example.com" to customize
 #       Set DISABLE_CORS=1 to allow all origins
 ENV PORT=8080
-ENV MODEL=model_quantized.onnx
-ENV TOKENIZER=tokenizer.json
+ENV MODEL=models/model_quantized.onnx
+ENV TOKENIZER=models/tokenizer.json
 
 EXPOSE 8080
 
@@ -109,8 +109,8 @@ COPY model_quantized.onnx tokenizer.json ./
 # CORS: Set CORS_ORIGINS="https://example.com,https://app.example.com" to customize
 #       Set DISABLE_CORS=1 to allow all origins
 ENV PORT=8080
-ENV MODEL=model_quantized.onnx
-ENV TOKENIZER=tokenizer.json
+ENV MODEL=models/model_quantized.onnx
+ENV TOKENIZER=models/tokenizer.json
 ENV USE_GPU=1
 ENV LD_LIBRARY_PATH=/app/lib:${LD_LIBRARY_PATH}
 

@@ -5,9 +5,9 @@ target/
 makefile
 scripts/
 NOTES
-*.onnx
-!model_quantized.onnx
-# tokenizer.json is needed at runtime - don't ignore it
+models/*.onnx
+!models/model_quantized.onnx
+# models/tokenizer.json is needed at runtime - don't ignore it
 .env
 *.log
 
