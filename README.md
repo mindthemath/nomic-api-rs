@@ -278,12 +278,12 @@ Workers process texts sequentially but in parallel across the pool.
 ### Files to Deploy
 
 ```
-target/release/nomic-serve       # 34MB binary (includes CPU + GPU support)
+target/release/nomic-serve       # 35.5MB binary (includes CPU + GPU support)
 models/txt/model_quantized.onnx  # 131MB model
-models/txt/tokenizer.json        # 700KB tokenizer
+models/txt/tokenizer.json        # 695KB tokenizer
 ```
 
-Total: ~166MB
+Total: ~167MB
 
 **Note**: The binary includes both CPU and GPU support. GPU code adds ~2MB but is only loaded when `USE_GPU=1` is set. For CPU-only deployments, you can build without the `cuda` feature to save 2MB (remove `"cuda"` from `Cargo.toml` features).
 
@@ -322,20 +322,28 @@ docker run -p 8080:8080 mindthemath/nomic-text-v1.5-rs:latest-cpu
 docker run --gpus all -p 8080:8080 mindthemath/nomic-text-v1.5-rs:latest-gpu
 ```
 
-**Image Size:**
-- **CPU image**: 222MB
-  - Binary: 34MB
-  - Model (`model_quantized.onnx`): 131MB
-  - Tokenizer: 695KB
-  - Base image (`debian:bookworm-slim`) + runtime dependencies: ~56MB
-- **GPU image**: 2.57GB
-  - Same artifacts as CPU image (166MB)
+**Image Size** (as shown by `docker images`):
+- **CPU image**: 258MB
+  - Binary: 35.5MB
+  - Model files (`model_quantized.onnx` + `tokenizer.json`): 138MB
+  - Base image (`debian:bookworm-slim`): 74.8MB
+  - Runtime dependencies (ca-certificates, libssl3, dumb-init): 9.2MB
+  - Layer compression overhead: ~12MB
+- **GPU image**: 2.6GB
+  - Binary: 35.5MB
+  - Model files (`model_quantized.onnx` + `tokenizer.json`): 138MB
+  - ONNX Runtime CUDA providers libraries: 196MB
+    - `libonnxruntime_providers_cuda.so`: 186MB
+    - `libonnxruntime_providers_shared.so`: 16KB
+    - `libonnxruntime_providers_tensorrt.so`: 944KB
   - CUDA runtime base image (`nvidia/cuda:12.1.0-runtime-ubuntu22.04`): 2.23GB
-  - ONNX Runtime CUDA providers libraries: ~178MB
-  - Runtime dependencies (ca-certificates, libssl3, dumb-init): ~12MB
-  - Note: The `-runtime` variant is required (not `-base`) as it includes CUDA runtime libraries needed by ONNX Runtime's CUDA execution provider. The ONNX Runtime CUDA providers (libonnxruntime_providers_cuda.so, libonnxruntime_providers_shared.so) add significant size but are required for GPU inference.
+  - Runtime dependencies (ca-certificates, libssl3, dumb-init): 7.9MB
+  - Layer compression overhead: ~100MB
+  - Note: The `-runtime` variant is required (not `-base`) as it includes CUDA runtime libraries needed by ONNX Runtime's CUDA execution provider. The ONNX Runtime CUDA providers add significant size but are required for GPU inference.
 
-The CPU Docker image adds ~56MB overhead compared to raw artifacts (166MB) due to the minimal Debian base image and runtime libraries. Docker layer compression reduces the effective overhead from the base image size (~75MB) to the actual overhead in the final image. The GPU image is significantly larger due to the CUDA runtime base image (~2.23GB) required for GPU inference. While CUDA `-base` images are smaller (~150MB), they lack the runtime libraries needed for ONNX Runtime.
+**Note**: The sizes shown above are as displayed by `docker images` (compressed/display size). The actual uncompressed sizes are slightly smaller (~246MB for CPU, ~2.5GB for GPU), but users will see the displayed sizes when running `docker images`.
+
+The CPU Docker image adds ~91MB overhead compared to raw artifacts (167MB) due to the minimal Debian base image, runtime libraries, and layer compression. The GPU image is significantly larger due to the CUDA runtime base image (~2.23GB) required for GPU inference. While CUDA `-base` images are smaller (~150MB), they lack the runtime libraries needed for ONNX Runtime.
 
 **GitHub Actions**: Automatically builds and pushes images on tag releases (e.g., `v1.0.0`).
 
