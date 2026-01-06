@@ -79,7 +79,7 @@ def calculate_geometric_mean(valid_pixels):
 
 def rgb_to_hex(rgb_array):
     """Convert RGB array (0-1 range) to hex color code"""
-    r_int, g_int, b_int = [int(c * 255) for c in rgb_array]
+    r_int, g_int, b_int = [round(c * 255) for c in rgb_array]
     return f"#{r_int:02x}{g_int:02x}{b_int:02x}"
 
 
@@ -306,17 +306,114 @@ def run_test(image_url: str, rust_url: str, averaging_method: str = "geometric",
 
 def rgb_to_hex_vis(rgb):
     """Convert RGB [0-1] to hex."""
-    r, g, b = [int(c * 255) for c in rgb]
+    r, g, b = [round(c * 255) for c in rgb]
     return f"#{r:02x}{g:02x}{b:02x}"
 
 
 def create_color_swatch(rgb, size=(200, 100)):
     """Create a color swatch image."""
-    img = Image.new("RGB", size, tuple(int(c * 255) for c in rgb))
+    img = Image.new("RGB", size, tuple(round(c * 255) for c in rgb))
     return img
 
 
-def create_visualization(image, image_name, py_dom_rgb, rust_dom_rgb, rust_avg_arith, rust_avg_geom, output_dir):
+def calculate_color_difference(rgb1, rgb2):
+    """Calculate max component difference (L∞ norm) between two RGB colors (0-1 range).
+    
+    This better captures hex code differences - if any single RGB component differs,
+    the max difference will reflect that, unlike L2 which can hide single-component
+    differences when other components match.
+    """
+    if rgb1 is None or rgb2 is None:
+        return 1.0  # Max difference if one is missing
+    diff = np.abs(np.array(rgb1) - np.array(rgb2))
+    return float(np.max(diff))  # Max component difference
+
+
+def hex_to_rgb_int(hex_str):
+    """Parse hex string to RGB integers (0-255)."""
+    if not hex_str:
+        return None
+    hex_str = hex_str.lstrip('#').lower()
+    if len(hex_str) != 6:
+        return None
+    try:
+        r = int(hex_str[0:2], 16)
+        g = int(hex_str[2:4], 16)
+        b = int(hex_str[4:6], 16)
+        return (r, g, b)
+    except ValueError:
+        return None
+
+
+def calculate_color_difference_from_hex(hex1, hex2):
+    """Calculate max component difference from hex codes (0-1 normalized).
+    
+    This avoids precision issues from JSON serialization of RGB floats.
+    Parses hex codes directly and calculates the difference in integer space.
+    Returns the normalized difference (0-1 range).
+    """
+    if not hex1 or not hex2:
+        return 1.0
+    
+    rgb1 = hex_to_rgb_int(hex1)
+    rgb2 = hex_to_rgb_int(hex2)
+    
+    if rgb1 is None or rgb2 is None:
+        return 1.0
+    
+    # Calculate max component difference in integer space, then normalize
+    max_diff_int = max(abs(rgb1[i] - rgb2[i]) for i in range(3))
+    return max_diff_int / 255.0  # Normalize to 0-1 range
+
+
+def count_hex_digit_differences(hex1, hex2):
+    """Count how many hex digits differ between two hex codes.
+    
+    Returns the number of hex digit positions that differ (0-6).
+    """
+    if not hex1 or not hex2:
+        return 6  # Max difference
+    
+    h1 = hex1.lstrip('#').lower()
+    h2 = hex2.lstrip('#').lower()
+    
+    if len(h1) != 6 or len(h2) != 6:
+        return 6
+    
+    differences = sum(1 for i in range(6) if h1[i] != h2[i])
+    return differences
+
+
+def format_scientific_notation(value, precision=3):
+    """Format a float in scientific notation for consistent sorting.
+    
+    Formats as: mantissa + 'E' + sign + exponent (zero-padded to 3 digits)
+    Example: 0.00392 -> "3.920E-003"
+    Example: 0.0 -> "0.000E+000"
+    
+    This ensures proper lexicographic sorting where larger differences come first.
+    Uses capital E and 3 decimal places for shorter filenames.
+    """
+    if value == 0.0:
+        return "0.000E+000"
+    
+    # Format with scientific notation (lowercase e first, then convert to uppercase)
+    formatted = f"{value:.{precision}e}"
+    
+    # Parse and reformat with zero-padded exponent and capital E
+    if 'e' in formatted.lower():
+        mantissa, exp_part = formatted.lower().split('e')
+        exp_sign = exp_part[0]
+        exp_value = int(exp_part[1:])
+        
+        # Zero-pad exponent to 3 digits for consistent sorting
+        exp_str = f"{exp_sign}{exp_value:03d}"
+        return f"{mantissa}E{exp_str}"
+    
+    return formatted.upper()
+
+
+def create_visualization(image, image_name, py_dom_rgb, rust_dom_rgb, rust_avg_arith, rust_avg_geom, output_dir, diff_score_from_hex=None, hex_diff_count=None, diff_score_from_rgb=None, py_dom_hex=None, rust_dom_hex=None):
     """Create visualization image showing original + color swatches in 2x2 grid."""
     swatch_size = (200, 150)  # Taller swatches for better proportions
     gap = 20  # Gap between image and swatches, and between swatches
@@ -361,21 +458,36 @@ def create_visualization(image, image_name, py_dom_rgb, rust_dom_rgb, rust_avg_a
     except:
         font = ImageFont.load_default()
     
-    py_hex = rgb_to_hex_vis(py_dom_rgb) if py_dom_rgb is not None else "N/A"
+    # Use actual hex codes from JSON (not converted from RGB) to avoid rounding differences
+    py_hex = py_dom_hex if py_dom_hex else (rgb_to_hex_vis(py_dom_rgb) if py_dom_rgb is not None else "N/A")
+    rust_hex = rust_dom_hex if rust_dom_hex else (rgb_to_hex_vis(rust_dom_rgb) if rust_dom_rgb else "N/A")
     
     # Labels for top row
     label_y = swatch_y + swatch_size[1] + 5
     if py_dom_rgb is not None:
         draw.text((swatch_x + 5, label_y), f"Dom (py): {py_hex}", fill="black", font=font)
-    draw.text((swatch_x + swatch_size[0] + gap + 5, label_y), f"Dom (rs): {rgb_to_hex_vis(rust_dom_rgb)}", fill="black", font=font)
+    draw.text((swatch_x + swatch_size[0] + gap + 5, label_y), f"Dom (rs): {rust_hex}", fill="black", font=font)
     
     # Labels for bottom row
     label_y_bottom = swatch_y + swatch_size[1] * 2 + gap + 5
     draw.text((swatch_x + 5, label_y_bottom), f"Avg (arith): {rgb_to_hex_vis(rust_avg_arith)}", fill="black", font=font)
     draw.text((swatch_x + swatch_size[0] + gap + 5, label_y_bottom), f"Avg (geom): {rgb_to_hex_vis(rust_avg_geom)}", fill="black", font=font)
     
-    # Use the provided image_name directly
-    output_path = output_dir / f"picsum_{image_name}_analysis.png"
+    # Generate filename with difference prefix for sorting
+    # Format: hex{count}_diff{scientific_notation}_rgb{scientific_notation}_
+    # Example: hex1_diff3.920000e-003_rgb3.920000e-003_picsum_600_analysis.png
+    if diff_score_from_hex is not None:
+        # Use scientific notation for hex-based diff (primary sort key)
+        hex_diff_str = format_scientific_notation(diff_score_from_hex)
+        # Secondary sort key: hex digit count
+        hex_count_str = f"hex{hex_diff_count:02d}" if hex_diff_count is not None else "hex??"
+        # Also include RGB-based diff for comparison/debugging
+        rgb_diff_str = format_scientific_notation(diff_score_from_rgb) if diff_score_from_rgb is not None else "0.000000e+000"
+        diff_prefix = f"{hex_count_str}_diff{hex_diff_str}_rgb{rgb_diff_str}_"
+    else:
+        diff_prefix = "hex??_diff0.000000e+000_rgb0.000000e+000_"
+    
+    output_path = output_dir / f"{diff_prefix}picsum_{image_name}_analysis.png"
     composite.save(output_path)
     return output_path
 
@@ -443,53 +555,94 @@ def main():
             else:
                 all_passed = False
     
-    # Generate visualizations
+    # Generate visualizations - calculate differences and sort by importance
     print(f"\n{'='*60}")
     print("Generating visualization images...")
     print("="*60)
     
+    # Collect all images with their difference scores
+    visualization_tasks = []
     for image_name, data in image_results.items():
         if data["image"] is None:
             continue
         
         # Get Python dominant color (doesn't depend on averaging method)
         py_dom_rgb = None
+        py_dom_hex = None
         if data["arithmetic"] and data["arithmetic"].get("py_colors"):
             py_dom_rgb = data["arithmetic"]["py_colors"].get("dominant_color", {}).get("rgb")
+            py_dom_hex = data["arithmetic"]["py_colors"].get("dominant_color", {}).get("hex")
         
         # Get Rust colors (use arithmetic for dominant, both for averages)
         rust_dom_rgb = [0.0, 0.0, 0.0]
+        rust_dom_hex = None
         rust_avg_arith = [0.0, 0.0, 0.0]
         rust_avg_geom = [0.0, 0.0, 0.0]
         
         if data["arithmetic"] and data["arithmetic"].get("rust_colors"):
             rust_dom_rgb = data["arithmetic"]["rust_colors"].get("dominant_color", {}).get("rgb", [0, 0, 0])
+            rust_dom_hex = data["arithmetic"]["rust_colors"].get("dominant_color", {}).get("hex")
             rust_avg_arith = data["arithmetic"]["rust_colors"].get("avg_color", {}).get("rgb", [0, 0, 0])
         
         if data["geometric"] and data["geometric"].get("rust_colors"):
             rust_avg_geom = data["geometric"]["rust_colors"].get("avg_color", {}).get("rgb", [0, 0, 0])
         
         if py_dom_rgb or rust_dom_rgb:
-            output_path = create_visualization(
-                data["image"],
+            # Calculate dominant color difference from hex codes (avoids JSON precision issues)
+            diff_score_from_hex = calculate_color_difference_from_hex(py_dom_hex, rust_dom_hex)
+            hex_diff_count = count_hex_digit_differences(py_dom_hex, rust_dom_hex)
+            # Also calculate from RGB for comparison/debugging
+            diff_score_from_rgb = calculate_color_difference(py_dom_rgb, rust_dom_rgb)
+            
+            visualization_tasks.append((
+                diff_score_from_hex,  # Primary sort key (from hex)
+                hex_diff_count,       # Secondary sort key (hex digit count)
+                diff_score_from_rgb,  # For debugging/comparison
                 image_name,
+                data["image"],
                 py_dom_rgb,
                 rust_dom_rgb,
                 rust_avg_arith,
                 rust_avg_geom,
-                output_dir
-            )
-            print(f"  ✓ {output_path.name}")
+                py_dom_hex,
+                rust_dom_hex,
+            ))
     
-    # Detailed Summary
+    # Sort by difference score (highest first - most problematic images first)
+    # Primary sort: hex-based diff, secondary sort: hex digit count
+    visualization_tasks.sort(key=lambda x: (x[0], x[1]), reverse=True)
+    
+    # Generate visualizations in sorted order
+    for diff_score_from_hex, hex_diff_count, diff_score_from_rgb, image_name, image, py_dom_rgb, rust_dom_rgb, rust_avg_arith, rust_avg_geom, py_dom_hex, rust_dom_hex in visualization_tasks:
+        output_path = create_visualization(
+            image,
+            image_name,
+            py_dom_rgb,
+            rust_dom_rgb,
+            rust_avg_arith,
+            rust_avg_geom,
+            output_dir,
+            diff_score_from_hex=diff_score_from_hex,
+            hex_diff_count=hex_diff_count,
+            diff_score_from_rgb=diff_score_from_rgb,
+            py_dom_hex=py_dom_hex,
+            rust_dom_hex=rust_dom_hex,
+        )
+        hex_diff_str = format_scientific_notation(diff_score_from_hex)
+        rgb_diff_str = format_scientific_notation(diff_score_from_rgb)
+        print(f"  ✓ {output_path.name} (hex diff: {hex_diff_str}, hex digits: {hex_diff_count}, rgb diff: {rgb_diff_str})")
+    
+    # Detailed Summary - sorted by difference score
     print(f"\n{'='*60}")
     print("DETAILED SUMMARY")
     print("="*60)
     print(f"\nOverall: {passed_tests}/{total_tests} tests passed ({passed_tests*100//total_tests}%)")
-    print(f"\nPer-image breakdown:")
+    print(f"\nPer-image breakdown (sorted by dominant color difference, highest first):")
     print("-" * 60)
     
-    for image_name, data in sorted(image_results.items()):
+    # Calculate differences and sort
+    summary_items = []
+    for image_name, data in image_results.items():
         if data["image"] is None:
             continue
         
@@ -497,9 +650,31 @@ def main():
         geom_result = data["geometric"]
         
         if not arith_result or not geom_result:
-            print(f"\n{image_name}: ⚠️  Missing results")
             continue
         
+        # Calculate dominant color difference (both from hex and RGB)
+        py_dom_rgb = None
+        py_dom_hex = None
+        rust_dom_rgb = None
+        rust_dom_hex = None
+        if arith_result.get("py_colors"):
+            py_dom_rgb = arith_result["py_colors"].get("dominant_color", {}).get("rgb")
+            py_dom_hex = arith_result["py_colors"].get("dominant_color", {}).get("hex")
+        if arith_result.get("rust_colors"):
+            rust_dom_rgb = arith_result["rust_colors"].get("dominant_color", {}).get("rgb")
+            rust_dom_hex = arith_result["rust_colors"].get("dominant_color", {}).get("hex")
+        
+        # Calculate differences from hex (primary) and RGB (for comparison)
+        diff_score_from_hex = calculate_color_difference_from_hex(py_dom_hex, rust_dom_hex)
+        hex_diff_count = count_hex_digit_differences(py_dom_hex, rust_dom_hex)
+        diff_score_from_rgb = calculate_color_difference(py_dom_rgb, rust_dom_rgb)
+        
+        summary_items.append((diff_score_from_hex, hex_diff_count, diff_score_from_rgb, image_name, data, arith_result, geom_result))
+    
+    # Sort by difference (highest first) - primary: hex diff, secondary: hex digit count
+    summary_items.sort(key=lambda x: (x[0], x[1]), reverse=True)
+    
+    for diff_score_from_hex, hex_diff_count, diff_score_from_rgb, image_name, data, arith_result, geom_result in summary_items:
         arith_passed = arith_result.get("avg_match", False) and arith_result.get("dom_match", False)
         geom_passed = geom_result.get("avg_match", False) and geom_result.get("dom_match", False)
         
@@ -516,12 +691,20 @@ def main():
         # Check if dominant colors actually differ (even if within tolerance)
         dom_differs = py_dom != "N/A" and rust_dom != "N/A" and py_dom.lower() != rust_dom.lower()
         
-        print(f"\n{image_name}:")
+        # Format scientific notation for display
+        hex_diff_str = format_scientific_notation(diff_score_from_hex)
+        rgb_diff_str = format_scientific_notation(diff_score_from_rgb)
+        
+        print(f"\n{image_name} (hex diff: {hex_diff_str}, hex digits: {hex_diff_count}, rgb diff: {rgb_diff_str}):")
         print(f"  Arithmetic: {status_arith}  Geometric: {status_geom}")
         if dom_differs:
             print(f"  ⚠️  Dominant colors DIFFER - Python: {py_dom}, Rust: {rust_dom}")
+            print(f"      Hex-based diff: {hex_diff_str} (from hex codes, avoids JSON precision issues)")
+            print(f"      RGB-based diff: {rgb_diff_str} (from JSON RGB values, may have precision loss)")
         else:
             print(f"  ✓ Dominant colors match - {py_dom}")
+            print(f"      Hex-based diff: {hex_diff_str} (from hex codes)")
+            print(f"      RGB-based diff: {rgb_diff_str} (from JSON RGB values)")
         
         if not arith_passed or not geom_passed:
             print(f"  ⚠️  Issues found:")
