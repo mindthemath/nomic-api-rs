@@ -277,7 +277,7 @@ fn find_dominant_color(pixels: &[[f32; 3]]) -> [f32; 3] {
     // This ensures we get the same result as Python's Counter.most_common(1)
     let mut entries: Vec<_> = color_counts.iter().collect();
     entries.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0))); // Sort by count desc, then by key asc for tie-breaking
-    
+
     // Debug: log top 5 for comparison with Python
     if entries.len() >= 5 {
         info!(
@@ -288,7 +288,7 @@ fn find_dominant_color(pixels: &[[f32; 3]]) -> [f32; 3] {
                 .collect::<Vec<_>>()
         );
     }
-    
+
     let most_common_key = entries.first().map(|(key, _)| **key).unwrap_or(0);
 
     // Return the actual pixel RGB for this cluster
@@ -302,11 +302,13 @@ fn get_image_colors(image: &DynamicImage, method: AveragingMethod) -> Option<Col
     let processed = resize_for_processing(image);
     let processed_size = (processed.width(), processed.height());
     let valid_pixels = extract_valid_pixels(&processed);
-    
+
     info!(
         "Color analysis: original={}x{}, processed={}x{}, valid_pixels={}",
-        original_size.0, original_size.1,
-        processed_size.0, processed_size.1,
+        original_size.0,
+        original_size.1,
+        processed_size.0,
+        processed_size.1,
         valid_pixels.len()
     );
 

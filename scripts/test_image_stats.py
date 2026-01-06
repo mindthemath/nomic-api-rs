@@ -14,6 +14,7 @@ Usage:
 
 import argparse
 import base64
+import random
 import sys
 from collections import Counter
 from colorsys import rgb_to_hsv
@@ -155,14 +156,54 @@ def get_exif_data(image):
     return exif_data
 
 
-def download_image(url: str) -> tuple[Image.Image, bytes]:
-    """Download image and return both PIL Image and raw bytes."""
+def download_image(url: str, cache_dir: Path = None) -> tuple[Image.Image, bytes, bool]:
+    """Download image and return both PIL Image and raw bytes.
+
+    Uses local cache if available to avoid re-downloading.
+
+    Returns:
+        Tuple of (image, image_bytes, was_cached)
+    """
+    # Extract cache filename from URL
+    cache_file = None
+    if cache_dir:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        # Extract ID and dimensions from URL: https://picsum.photos/id/{id}/{width}/{height}
+        parts = url.split("/")
+        img_id = parts[-3]
+        width = parts[-2]
+        height = parts[-1]
+        cache_file = cache_dir / f"picsum_{img_id}_{width}x{height}.jpg"
+
+        # Check cache first
+        if cache_file.exists():
+            try:
+                image_bytes = cache_file.read_bytes()
+                image = Image.open(BytesIO(image_bytes))
+                return (
+                    image,
+                    image_bytes,
+                    True,  # was_cached = True
+                )
+            except Exception as e:
+                # Cache file corrupted, delete and re-download
+                cache_file.unlink()
+
+    # Download from URL
     headers = {"User-Agent": "Mozilla/5.0 (compatible; image-stats-test/1.0)"}
     response = requests.get(url, timeout=30, headers=headers)
     response.raise_for_status()
     image_bytes = response.content
     image = Image.open(BytesIO(image_bytes))
-    return image, image_bytes
+
+    # Save to cache if cache_dir is provided
+    if cache_dir and cache_file:
+        try:
+            cache_file.write_bytes(image_bytes)
+        except Exception:
+            pass  # Don't fail if cache write fails
+
+    return image, image_bytes, False  # was_cached = False
 
 
 def call_rust_endpoint_with_bytes(
@@ -295,6 +336,7 @@ def run_test(
     rust_url: str,
     averaging_method: str = "geometric",
     verbose: bool = True,
+    cache_dir: Path = None,
 ) -> tuple[bool, list[str], dict]:
     """Run a single test comparing Python and Rust implementations."""
     errors = []
@@ -307,9 +349,10 @@ def run_test(
     # Download image ONCE - both Python and Rust will use the same bytes
     print("\n1. Downloading image...")
     try:
-        image, image_bytes = download_image(image_url)
+        image, image_bytes, was_cached = download_image(image_url, cache_dir=cache_dir)
+        cache_msg = " (from cache)" if was_cached else ""
         print(
-            f"   Image size: {image.size}, mode: {image.mode}, bytes: {len(image_bytes)}"
+            f"   Image size: {image.size}, mode: {image.mode}, bytes: {len(image_bytes)}{cache_msg}"
         )
     except Exception as e:
         return False, [f"Failed to download image: {e}"], {}
@@ -527,7 +570,7 @@ def create_visualization(
     rust_dom_hex=None,
 ):
     """Create visualization image showing original + color swatches in 2x2 grid."""
-    swatch_size = (200, 150)  # Taller swatches for better proportions
+    swatch_size = (150, 150)  # Square swatches to save horizontal space
     gap = 20  # Gap between image and swatches, and between swatches
     label_height = 30  # Space for labels below swatches
 
@@ -545,9 +588,9 @@ def create_visualization(
     # Paste original image on the left
     composite.paste(image, (0, 0))
 
-    # Calculate swatch area position (right side, vertically centered if image is taller)
+    # Calculate swatch area position (right side, top-aligned with image)
     swatch_x = image.width + gap
-    swatch_y = max(0, (canvas_height - swatch_area_height) // 2)
+    swatch_y = 0  # Top-align swatches with image
 
     # Create and paste color swatches in 2x2 grid
     # Top row: Dominant colors
@@ -640,6 +683,256 @@ def create_visualization(
     return output_path
 
 
+def generate_test_images(seed=42):
+    """Generate deterministic test image URLs as a generator.
+
+    This generator yields images from a deterministic sequence based on the seed.
+    The sequence is the same regardless of how many images are requested, ensuring
+    cache consistency - requesting 10 then 20 images will reuse the first 10.
+
+    Args:
+        seed: Random seed for deterministic selection
+
+    Yields:
+        Image URLs with varied sizes
+    """
+    # Available picsum.photos IDs (these are stable/deterministic)
+    # Using a smaller range that's more likely to exist (picsum.photos doesn't have all IDs)
+    # IDs 1-200 are more reliable
+    available_ids = list(range(1, 201))
+
+    # Size variations - diverse aspect ratios and dimensions
+    size_presets = [
+        # Small
+        (150, 150),
+        (200, 150),
+        (150, 200),
+        (180, 180),
+        # Medium-small
+        (250, 200),
+        (200, 250),
+        (225, 225),
+        (240, 180),
+        # Medium
+        (300, 200),
+        (200, 300),
+        (250, 250),
+        (280, 220),
+        # Medium-large
+        (350, 250),
+        (250, 350),
+        (300, 300),
+        (320, 240),
+        # Large
+        (400, 300),
+        (300, 400),
+        (350, 350),
+        (380, 280),
+        # Extra large
+        (500, 300),
+        (300, 500),
+        (400, 400),
+        (450, 350),
+        # Wide/tall
+        (600, 400),
+        (400, 600),
+        (500, 500),
+        (550, 400),
+    ]
+
+    # Set seed for deterministic selection
+    rng = random.Random(seed)
+
+    # Generate deterministic sequences lazily (as needed)
+    # This ensures that the first N images are always the same regardless of count
+    while True:
+        # Generate next ID and size deterministically
+        img_id = rng.choice(available_ids)
+        width, height = rng.choice(size_presets)
+        yield f"https://picsum.photos/id/{img_id}/{width}/{height}"
+
+
+def rectangle_pack(images, max_width=4000, padding=10):
+    """Pack rectangles using a uniform grid layout with consistent spacing.
+
+    All rows are top-aligned and use consistent padding. Each row has uniform height
+    based on the tallest image in that row.
+
+    Args:
+        images: List of (image, name) tuples
+        max_width: Maximum canvas width
+        padding: Padding between images (and from edges)
+
+    Returns:
+        Tuple of (canvas_width, canvas_height, placements) where placements
+        is a list of (x, y, image, name) tuples
+    """
+    if not images:
+        return 0, 0, []
+
+    # First pass: group images into rows
+    rows = []
+    current_row = []
+    current_row_width = padding  # Start with left padding
+    current_row_max_height = 0
+
+    for img, name in images:
+        img_width, img_height = img.size
+
+        # Check if image fits in current row
+        if current_row_width + img_width + padding > max_width:
+            # Save current row and start new one
+            if current_row:
+                rows.append((current_row, current_row_max_height))
+            current_row = [(img, name)]
+            current_row_width = padding + img_width + padding
+            current_row_max_height = img_height
+        else:
+            # Add to current row
+            current_row.append((img, name))
+            current_row_width += img_width + padding
+            current_row_max_height = max(current_row_max_height, img_height)
+
+    # Don't forget the last row
+    if current_row:
+        rows.append((current_row, current_row_max_height))
+
+    # Second pass: place images with uniform spacing
+    placements = []
+    current_y = padding  # Top padding
+    max_row_width = 0
+
+    for row_images, row_height in rows:
+        current_x = padding  # Left padding (consistent for all rows)
+
+        for img, name in row_images:
+            # All images in a row are top-aligned (y = current_y)
+            placements.append((current_x, current_y, img, name))
+            img_width, _ = img.size
+            current_x += img_width + padding
+            # Track the right edge of the row (includes padding after last image)
+            max_row_width = max(max_row_width, current_x)
+
+        # Move to next row with consistent spacing
+        current_y += row_height + padding
+
+    # Add bottom padding (current_y already includes padding after last row)
+    canvas_height = current_y
+    # Add right padding (max_row_width already includes padding after last image in each row)
+    canvas_width = max_row_width
+
+    return canvas_width, canvas_height, placements
+
+
+def create_summary_canvases(image_results, output_dir, summary_items):
+    """Create two summary canvases: success cases and review cases.
+
+    Args:
+        image_results: Dictionary of image results
+        output_dir: Directory containing individual visualization images
+        summary_items: List of summary items with test results
+    """
+    # Load visualization images and categorize
+    success_images = []
+    review_images = []
+
+    # Build a lookup for visualization file paths
+    vis_files = {}
+    for vis_file in output_dir.glob("hex*_diff*_rgb*_picsum_*_analysis.png"):
+        # Extract image name from filename: hex*_diff*_rgb*_picsum_{name}_analysis.png
+        parts = vis_file.stem.split("_picsum_")
+        if len(parts) == 2:
+            image_name = parts[1].replace("_analysis", "")
+            vis_files[image_name] = vis_file
+
+    # Categorize images based on test results
+    for (
+        diff_score_from_hex,
+        hex_diff_count,
+        diff_score_from_rgb,
+        image_name,
+        data,
+        arith_result,
+        geom_result,
+    ) in summary_items:
+        # Check if this is a success case
+        arith_passed = arith_result.get("avg_match", False)
+        geom_passed = geom_result.get("avg_match", False)
+
+        py_dom = "N/A"
+        rust_dom = "N/A"
+        if arith_result.get("py_colors"):
+            py_dom = (
+                arith_result["py_colors"].get("dominant_color", {}).get("hex", "N/A")
+            )
+        if arith_result.get("rust_colors"):
+            rust_dom = (
+                arith_result["rust_colors"].get("dominant_color", {}).get("hex", "N/A")
+            )
+
+        dom_differs = (
+            py_dom != "N/A" and rust_dom != "N/A" and py_dom.lower() != rust_dom.lower()
+        )
+
+        # Success: avg colors match AND dominant colors match
+        is_success = arith_passed and geom_passed and not dom_differs
+
+        # Review: avg color errors OR dominant color differences
+        is_review = not arith_passed or not geom_passed or dom_differs
+
+        # Load visualization image if it exists
+        if image_name in vis_files:
+            try:
+                vis_img = Image.open(vis_files[image_name])
+                if is_success:
+                    success_images.append((vis_img, image_name))
+                if is_review:
+                    # For review, keep sorted by difference (highest first)
+                    review_images.append((diff_score_from_hex, vis_img, image_name))
+            except Exception as e:
+                print(f"  ⚠️  Failed to load visualization for {image_name}: {e}")
+
+    # Sort review images by difference (highest first)
+    review_images.sort(key=lambda x: x[0], reverse=True)
+    review_images = [(img, name) for _, img, name in review_images]
+
+    # Create success canvas (rectangle packed)
+    if success_images:
+        print(f"  Creating success canvas with {len(success_images)} images...")
+        canvas_width, canvas_height, placements = rectangle_pack(
+            success_images, max_width=2500, padding=15
+        )
+        success_canvas = Image.new("RGB", (canvas_width, canvas_height), "white")
+
+        for x, y, img, name in placements:
+            success_canvas.paste(img, (x, y))
+
+        success_path = output_dir / "summary_success.png"
+        success_canvas.save(success_path)
+        print(f"    ✓ Saved: {success_path}")
+    else:
+        print(f"  No success cases to display")
+
+    # Create review canvas (sorted by difference, laid out in rows)
+    if review_images:
+        print(f"  Creating review canvas with {len(review_images)} images...")
+        # For review, use sorted rows (keep order by difference - highest first)
+        # Use rectangle_pack but it will maintain order since we pass sorted list
+        canvas_width, canvas_height, placements = rectangle_pack(
+            review_images, max_width=2500, padding=15
+        )
+        review_canvas = Image.new("RGB", (canvas_width, canvas_height), "white")
+
+        for x, y, img, name in placements:
+            review_canvas.paste(img, (x, y))
+
+        review_path = output_dir / "summary_review.png"
+        review_canvas.save(review_path)
+        print(f"    ✓ Saved: {review_path}")
+    else:
+        print(f"  No review cases to display")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Test Rust /img/stats endpoint against Python reference"
@@ -648,56 +941,83 @@ def main():
         "--rust-url", default="http://localhost:8080", help="Rust server URL"
     )
     parser.add_argument("--image-url", default=None, help="Specific image URL to test")
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Random seed for deterministic image selection (default: 42)",
+    )
+    parser.add_argument(
+        "--count",
+        type=int,
+        default=10,
+        help="Number of test images to use (default: 10)",
+    )
     args = parser.parse_args()
-
-    # Test images - using STABLE URLs (not random picsum)
-    # Total of 10 diverse images for comprehensive testing
-    test_images = [
-        "https://picsum.photos/id/10/400/300",  # Forest landscape
-        "https://picsum.photos/id/20/200/200",  # Beach scene
-        "https://picsum.photos/id/100/300/200",  # Landscape
-        "https://picsum.photos/id/200/400/300",  # Architecture
-        "https://picsum.photos/id/300/300/400",  # Portrait orientation
-        "https://picsum.photos/id/400/500/300",  # Wide landscape
-        "https://picsum.photos/id/500/250/250",  # Square format
-        "https://picsum.photos/id/600/350/250",  # Medium landscape
-        "https://picsum.photos/id/700/200/300",  # Portrait
-        "https://picsum.photos/id/800/400/400",  # Large square
-    ]
-
-    if args.image_url:
-        test_images = [args.image_url]
 
     # Track results per image
     image_results = {}
 
-    # Create output directory for visualizations
-    output_dir = Path("test_images") / "visualizations"
+    # Create output directories
+    test_images_dir = Path("test_images")
+    test_images_dir.mkdir(parents=True, exist_ok=True)
+    cache_dir = test_images_dir  # Cache images in test_images/ directory
+    output_dir = Path("results")
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Step 1: Download all images upfront (sequential, but fast if cached)
+    # Step 1: Download images until we have the requested count
     print(f"\n{'='*60}")
-    print("Downloading test images...")
+    print(
+        f"Downloading {args.count} test images (using cache: test_images/, seed={args.seed})..."
+    )
     print("=" * 60)
     downloaded_images = {}
-    for image_url in test_images:
+
+    if args.image_url:
+        # Single image mode
+        image_generator = iter([args.image_url])
+        target_count = 1
+    else:
+        # Generator mode - keep requesting until we have the requested count
+        image_generator = generate_test_images(seed=args.seed)
+        target_count = args.count
+
+    for image_url in image_generator:
+        if len(downloaded_images) >= target_count:
+            break
         image_name = (
             image_url.split("/id/")[1].split("/")[0]
             if "/id/" in image_url
             else "unknown"
         )
         try:
-            image, image_bytes = download_image(image_url)
+            image, image_bytes, was_cached = download_image(
+                image_url, cache_dir=cache_dir
+            )
             downloaded_images[image_name] = {
                 "url": image_url,
                 "image": image,
                 "image_bytes": image_bytes,
             }
+            cache_status = " (cached)" if was_cached else ""
             print(
-                f"  ✓ {image_name}: {image.size[0]}x{image.size[1]}, {len(image_bytes)} bytes"
+                f"  ✓ {image_name}: {image.size[0]}x{image.size[1]}, {len(image_bytes)} bytes{cache_status}"
             )
         except Exception as e:
             print(f"  ✗ Failed to download {image_url}: {e}")
+            # Continue to next image - generator will provide more
+
+    # Summary of downloads
+    downloaded_count = len(downloaded_images)
+    if downloaded_count < target_count:
+        print(
+            f"\n⚠️  Downloaded {downloaded_count}/{target_count} images ({target_count - downloaded_count} failed)"
+        )
+    else:
+        print(f"\n✓ Successfully downloaded {downloaded_count} images")
+    print(
+        f"   Will run {downloaded_count * 2} tests ({downloaded_count} images × 2 methods)"
+    )
 
     # Step 2: Prepare all test tasks
     test_tasks = []
@@ -1051,8 +1371,14 @@ def main():
         print("=" * 60)
 
     print(f"\n{'='*60}")
-    print(f"Visualizations saved to: {output_dir}")
+    print(f"Results saved to: {output_dir}")
     print("=" * 60)
+
+    # Create summary canvases
+    print(f"\n{'='*60}")
+    print("Creating summary canvases...")
+    print("=" * 60)
+    create_summary_canvases(image_results, output_dir, summary_items)
 
     return 0 if all_passed else 1
 

@@ -92,11 +92,29 @@ check:
 	@cargo check
 	@echo "✓ Check complete"
 
+lint:
+	@uvx black scripts/
+	@uvx isort --profile black scripts/
+	@echo "✓ Lint complete"
+
 clean:
 	rm -rf target Cargo.lock
 
 clean-imgs:
-	rm -rf scripts/test_images
+	@printf "Are you sure you want to delete scripts/test_images? [y/N] "; \
+	read REPLY; \
+	case "$$REPLY" in \
+		[Yy]*) rm -rf scripts/test_images; echo "✓ Deleted scripts/test_images"; ;; \
+		*) echo "Cancelled."; ;; \
+	esac
+
+clean-results:
+	@printf "Are you sure you want to delete scripts/results? [y/N] "; \
+	read REPLY; \
+	case "$$REPLY" in \
+		[Yy]*) rm -rf scripts/results; echo "✓ Deleted scripts/results"; ;; \
+		*) echo "Cancelled."; ;; \
+	esac
 
 # ==============================================================================
 # Run
@@ -190,7 +208,7 @@ test-img-stats-arithmetic:
 # Validate Rust image-stats against Python reference
 test-img-stats-validate:
 	@echo "Validating Rust /img/stats against Python reference..."
-	@cd scripts && python3 test_image_stats.py --rust-url http://localhost:8080
+	@cd scripts && python3 test_image_stats.py --rust-url http://localhost:8080 --count 100 --seed 42
 
 # ==============================================================================
 # Test - Multimodal

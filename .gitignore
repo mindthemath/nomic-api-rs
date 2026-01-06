@@ -28,3 +28,6 @@ venv/
 Thumbs.db
 models/
 test_images/
+results/
+*.tar.gz
+

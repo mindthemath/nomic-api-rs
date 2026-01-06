@@ -1,5 +1,6 @@
 #!/bin/bash
 # Download test images used in validation for local inspection
+# Uses the same deterministic generation as test_image_stats.py
 
 set -e
 
@@ -9,24 +10,44 @@ TEST_IMAGES_DIR="$PROJECT_ROOT/test_images"
 
 mkdir -p "$TEST_IMAGES_DIR"
 
+# Default seed and count (match test_image_stats.py defaults)
+SEED=${1:-42}
+COUNT=${2:-10}
+
 echo "Downloading test images to $TEST_IMAGES_DIR..."
+echo "Using seed=$SEED, count=$COUNT"
+echo ""
 
-# Download the test images used in test_image_stats.py (10 total)
-curl -s -L -o "$TEST_IMAGES_DIR/picsum_10_400x300.jpg" "https://picsum.photos/id/10/400/300"
-curl -s -L -o "$TEST_IMAGES_DIR/picsum_20_200x200.jpg" "https://picsum.photos/id/20/200/200"
-curl -s -L -o "$TEST_IMAGES_DIR/picsum_100_300x200.jpg" "https://picsum.photos/id/100/300/200"
-curl -s -L -o "$TEST_IMAGES_DIR/picsum_200_400x300.jpg" "https://picsum.photos/id/200/400/300"
-curl -s -L -o "$TEST_IMAGES_DIR/picsum_300_300x400.jpg" "https://picsum.photos/id/300/300/400"
-curl -s -L -o "$TEST_IMAGES_DIR/picsum_400_500x300.jpg" "https://picsum.photos/id/400/500/300"
-curl -s -L -o "$TEST_IMAGES_DIR/picsum_500_250x250.jpg" "https://picsum.photos/id/500/250/250"
-curl -s -L -o "$TEST_IMAGES_DIR/picsum_600_350x250.jpg" "https://picsum.photos/id/600/350/250"
-curl -s -L -o "$TEST_IMAGES_DIR/picsum_700_200x300.jpg" "https://picsum.photos/id/700/200/300"
-curl -s -L -o "$TEST_IMAGES_DIR/picsum_800_400x400.jpg" "https://picsum.photos/id/800/400/400"
+# Generate URLs using Python (same logic as test_image_stats.py)
+python3 << EOF
+import sys
+sys.path.insert(0, '$SCRIPT_DIR')
+from test_image_stats import generate_test_images
 
+urls = generate_test_images(seed=$SEED, count=$COUNT)
+for url in urls:
+    # Extract ID and dimensions from URL
+    # Format: https://picsum.photos/id/{id}/{width}/{height}
+    parts = url.split('/')
+    img_id = parts[-3]
+    width = parts[-2]
+    height = parts[-1]
+    filename = f"picsum_{img_id}_{width}x{height}.jpg"
+    print(f"{url}|{filename}")
+EOF | while IFS='|' read -r url filename; do
+    echo "  Downloading $filename..."
+    curl -s -L -o "$TEST_IMAGES_DIR/$filename" "$url" || echo "    ⚠️  Failed to download $filename"
+done
+
+echo ""
 echo "✓ Images downloaded:"
-ls -lh "$TEST_IMAGES_DIR"/*.jpg
+ls -lh "$TEST_IMAGES_DIR"/*.jpg 2>/dev/null | wc -l | xargs echo "  Total files:"
 
 echo ""
 echo "Images saved to: $TEST_IMAGES_DIR"
 echo "You can now visually inspect them to validate the color analysis results."
+echo ""
+echo "Usage: $0 [seed] [count]"
+echo "  seed: Random seed for deterministic selection (default: 42)"
+echo "  count: Number of images to download (default: 10)"
 
