@@ -1,13 +1,32 @@
+# Build artifacts
 target/
+
+# Git
 .git/
 .github/
+
+# Documentation (not needed at runtime)
 *.md
+docs/
+
+# Build files
 makefile
 scripts/
-NOTES
-models/*.onnx
-!models/model_quantized.onnx
-# models/tokenizer.json is needed at runtime - don't ignore it
-.env
-*.log
 
+# Notes and logs
+NOTES
+*.log
+.env
+
+# Python virtual environment
+.venv/
+__pycache__/
+
+# Ignore all model files except quantized ones we need
+models/txt/*.onnx
+!models/txt/model_quantized.onnx
+models/img/*.onnx
+!models/img/model_quantized.onnx
+
+# Keep tokenizer.json (text model) and preprocessor_config.json (vision model)
+# These are NOT ignored - they're needed at runtime

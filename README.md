@@ -1,12 +1,12 @@
 # nomic-serve
 
-A fast Rust server for generating text embeddings using the [nomic-embed-text-v1.5](https://huggingface.co/nomic-ai/nomic-embed-text-v1.5) model via ONNX Runtime.
+A fast Rust server for generating text and image embeddings using [nomic-embed-text-v1.5](https://huggingface.co/nomic-ai/nomic-embed-text-v1.5) and [nomic-embed-vision-v1.5](https://huggingface.co/nomic-ai/nomic-embed-vision-v1.5) models via ONNX Runtime.
 
 ## Quick Start
 
 ```bash
 # Download model files
-make model
+make model-txt model-img
 
 # Build
 make build
@@ -25,14 +25,18 @@ curl -X POST localhost:8080/embed \
 Interactive documentation available at `/docs` (Swagger UI).
 
 ### `GET /health`
-Returns health status.
+Returns health status and model availability.
 
 **Response:**
 ```json
-{"status": "OK"}
+{
+  "status": "OK",
+  "text_model": true,
+  "vision_model": true
+}
 ```
 
-### `POST /embed`
+### `POST /embed` (or `/txt/embed`)
 Generate embedding for a single text.
 
 **Request:**
@@ -58,7 +62,7 @@ Generate embedding for a single text.
 ```
 Returns a 128-dimensional embedding (faster similarity search, slightly lower quality).
 
-### `POST /batch`
+### `POST /batch` (or `/txt/batch`)
 Generate embeddings for multiple texts.
 
 **Request:**
@@ -78,6 +82,52 @@ Generate embeddings for multiple texts.
 }
 ```
 
+### `POST /img/embed`
+Generate embedding for a single image.
+
+**Request:**
+```json
+{
+  "content": "https://example.com/image.jpg",
+  "dim": 768
+}
+```
+
+- `content` (required): Image as URL, data URL (`data:image/jpeg;base64,...`), or raw base64
+- `dim` (optional): Embedding dimension (1-768). Defaults to 768.
+
+**Response:**
+```json
+{
+  "embedding": [0.123, 0.456, ...],
+  "time_ms": 89.12
+}
+```
+
+**Limits:** Maximum 20MB per image (compressed). Supports JPEG, PNG, GIF, WebP, BMP, TIFF.
+
+### `POST /img/batch`
+Generate embeddings for multiple images.
+
+**Request:**
+```json
+{
+  "contents": [
+    "https://example.com/cat.jpg",
+    "data:image/png;base64,iVBORw0KGgo..."
+  ],
+  "dim": 768
+}
+```
+
+**Response:**
+```json
+{
+  "embeddings": [[0.123, ...], [0.789, ...]],
+  "time_ms": 178.45
+}
+```
+
 ### `GET /docs`
 Swagger UI documentation page.
 
@@ -89,8 +139,10 @@ OpenAPI 3.1.0 schema.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PORT` | `8080` | Server port |
-| `MODEL` | `models/txt/model_quantized.onnx` | Path to ONNX model |
+| `MODEL` | `models/txt/model_quantized.onnx` | Path to text ONNX model (fallback for `TXT_MODEL`) |
+| `TXT_MODEL` | `models/txt/model_quantized.onnx` | Path to text ONNX model |
 | `TOKENIZER` | `models/txt/tokenizer.json` | Path to tokenizer |
+| `IMG_MODEL` | `models/img/model_quantized.onnx` | Path to vision ONNX model |
 | `USE_GPU` | `false` | Enable GPU inference (`1` or `true`) |
 | `DISABLE_CORS` | `false` | Disable CORS entirely (`1` or `true`) |
 | `CORS_ORIGINS` | *(see below)* | Comma-separated list of allowed origins |
@@ -278,12 +330,13 @@ Workers process texts sequentially but in parallel across the pool.
 ### Files to Deploy
 
 ```
-target/release/nomic-serve       # 35.5MB binary (includes CPU + GPU support)
-models/txt/model_quantized.onnx  # 131MB model
+target/release/nomic-serve       # 39MB binary (includes CPU + GPU support)
+models/txt/model_quantized.onnx  # 131MB text model
 models/txt/tokenizer.json        # 695KB tokenizer
+models/img/model_quantized.onnx  # 93MB vision model
 ```
 
-Total: ~167MB
+Total: ~264MB
 
 **Note**: The binary includes both CPU and GPU support. GPU code adds ~2MB but is only loaded when `USE_GPU=1` is set. For CPU-only deployments, you can build without the `cuda` feature to save 2MB (remove `"cuda"` from `Cargo.toml` features).
 
@@ -323,27 +376,24 @@ docker run --gpus all -p 8080:8080 mindthemath/nomic-text-v1.5-rs:latest-gpu
 ```
 
 **Image Size** (as shown by `docker images`):
-- **CPU image**: 258MB
-  - Binary: 35.5MB
-  - Model files (`model_quantized.onnx` + `tokenizer.json`): 138MB
+- **CPU image**: ~359MB
+  - Binary: 39MB
+  - Text model files (`model_quantized.onnx` + `tokenizer.json`): 132MB
+  - Vision model (`model_quantized.onnx`): 93MB
   - Base image (`debian:bookworm-slim`): 74.8MB
   - Runtime dependencies (ca-certificates, libssl3, dumb-init): 9.2MB
   - Layer compression overhead: ~12MB
-- **GPU image**: 2.6GB
-  - Binary: 35.5MB
-  - Model files (`model_quantized.onnx` + `tokenizer.json`): 138MB
+- **GPU image**: ~2.7GB
+  - Binary: 39MB
+  - Text model files (`model_quantized.onnx` + `tokenizer.json`): 132MB
+  - Vision model (`model_quantized.onnx`): 93MB
   - ONNX Runtime CUDA providers libraries: 196MB
-    - `libonnxruntime_providers_cuda.so`: 186MB
-    - `libonnxruntime_providers_shared.so`: 16KB
-    - `libonnxruntime_providers_tensorrt.so`: 944KB
   - CUDA runtime base image (`nvidia/cuda:12.1.0-runtime-ubuntu22.04`): 2.23GB
-  - Runtime dependencies (ca-certificates, libssl3, dumb-init): 7.9MB
+  - Runtime dependencies: 8MB
   - Layer compression overhead: ~100MB
   - Note: The `-runtime` variant is required (not `-base`) as it includes CUDA runtime libraries needed by ONNX Runtime's CUDA execution provider. The ONNX Runtime CUDA providers add significant size but are required for GPU inference.
 
-**Note**: The sizes shown above are as displayed by `docker images` (compressed/display size). The actual uncompressed sizes are slightly smaller (~246MB for CPU, ~2.5GB for GPU), but users will see the displayed sizes when running `docker images`.
-
-The CPU Docker image adds ~91MB overhead compared to raw artifacts (167MB) due to the minimal Debian base image, runtime libraries, and layer compression. The GPU image is significantly larger due to the CUDA runtime base image (~2.23GB) required for GPU inference. While CUDA `-base` images are smaller (~150MB), they lack the runtime libraries needed for ONNX Runtime.
+**Note**: The CPU Docker image includes both text and vision models for full multimodal support. The GPU image is significantly larger due to the CUDA runtime base image (~2.23GB) required for GPU inference.
 
 **GitHub Actions**: Automatically builds and pushes images on tag releases (e.g., `v1.0.0`).
 
@@ -468,17 +518,28 @@ LD_LIBRARY_PATH="$ORT_LIB_DIR:$LD_LIBRARY_PATH" USE_GPU=1 ./target/release/nomic
 
 ## Model Info
 
+**Text Model:**
 - **Model**: [nomic-ai/nomic-embed-text-v1.5](https://huggingface.co/nomic-ai/nomic-embed-text-v1.5)
 - **Embedding dimension**: 768
 - **Max sequence length**: 8,192 tokens
 - **Pooling**: Mean pooling over non-padding tokens
-- **License**: Apache 2.0
+
+**Vision Model:**
+- **Model**: [nomic-ai/nomic-embed-vision-v1.5](https://huggingface.co/nomic-ai/nomic-embed-vision-v1.5)
+- **Embedding dimension**: 768
+- **Input size**: 224×224 (auto-resized)
+- **Pooling**: CLS token extraction
+
+Both models share the same embedding space via contrastive training, enabling direct comparison of text and image embeddings.
+
+**License**: Apache 2.0
 
 ## References
 
 - [Nomic Embed Technical Report (2024)](https://static.nomic.ai/reports/2024_Nomic_Embed_Text_Technical_Report.pdf)
 - [Nomic Embed v1 Blog Post](https://www.nomic.ai/blog/posts/nomic-embed-text-v1)
-- [HuggingFace Model Card](https://huggingface.co/nomic-ai/nomic-embed-text-v1.5)
+- [HuggingFace Text Model](https://huggingface.co/nomic-ai/nomic-embed-text-v1.5)
+- [HuggingFace Vision Model](https://huggingface.co/nomic-ai/nomic-embed-vision-v1.5)
 
 ## License
 

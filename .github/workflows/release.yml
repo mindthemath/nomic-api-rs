@@ -29,6 +29,7 @@ jobs:
 
       - name: Download model files
         run: |
+          # Text model (nomic-embed-text-v1.5)
           mkdir -p models/txt
           wget --content-disposition -q \
             -O models/txt/tokenizer.json \
@@ -36,6 +37,12 @@ jobs:
           wget --content-disposition -q \
             -O models/txt/model_quantized.onnx \
             https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/resolve/main/onnx/model_quantized.onnx
+          
+          # Vision model (nomic-embed-vision-v1.5)
+          mkdir -p models/img
+          wget --content-disposition -q \
+            -O models/img/model_quantized.onnx \
+            https://huggingface.co/nomic-ai/nomic-embed-vision-v1.5/resolve/main/onnx/model_quantized.onnx
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -46,12 +53,12 @@ jobs:
             --platform ${{ matrix.platform }} \
             --target runtime-cpu \
             --load \
-            -t nomic-embed-text-v1-5:${{ matrix.artifact }} \
+            -t nomic-embed-v1-5:${{ matrix.artifact }} \
             .
 
       - name: Extract artifacts
         run: |
-          docker create --name temp-extract nomic-embed-text-v1-5:${{ matrix.artifact }}
+          docker create --name temp-extract nomic-embed-v1-5:${{ matrix.artifact }}
           mkdir -p release
           docker cp temp-extract:/app/nomic-serve release/
           docker cp temp-extract:/app/models release/
@@ -60,15 +67,15 @@ jobs:
       - name: Create tarball
         run: |
           cd release
-          mkdir -p nomic-embed-text-v1-5-${VERSION}-${{ matrix.artifact }}
-          mv nomic-serve models nomic-embed-text-v1-5-${VERSION}-${{ matrix.artifact }}/
-          tar -czvf ../nomic-embed-text-v1-5-${VERSION}-${{ matrix.artifact }}.tar.gz nomic-embed-text-v1-5-${VERSION}-${{ matrix.artifact }}
+          mkdir -p nomic-embed-v1-5-${VERSION}-${{ matrix.artifact }}
+          mv nomic-serve models nomic-embed-v1-5-${VERSION}-${{ matrix.artifact }}/
+          tar -czvf ../nomic-embed-v1-5-${VERSION}-${{ matrix.artifact }}.tar.gz nomic-embed-v1-5-${VERSION}-${{ matrix.artifact }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: nomic-embed-text-v1-5-*.tar.gz
+          path: nomic-embed-v1-5-*.tar.gz
 
   release:
     needs: build-linux
@@ -94,30 +101,46 @@ jobs:
           files: artifacts/*
           generate_release_notes: true
           body: |
+            ## nomic-embed-v1.5
+
+            Multimodal embedding server supporting both text and image embeddings.
+
             ## Installation
 
             Download the tarball for your architecture and extract:
 
             ```bash
             # For x86_64
-            tar -xzf nomic-embed-text-v1-5-${{ env.VERSION }}-linux-x64.tar.gz
+            tar -xzf nomic-embed-v1-5-${{ env.VERSION }}-linux-x64.tar.gz
 
             # For ARM64 (Raspberry Pi, AWS Graviton, Apple Silicon Linux VMs, etc.)
-            tar -xzf nomic-embed-text-v1-5-${{ env.VERSION }}-linux-arm64.tar.gz
+            tar -xzf nomic-embed-v1-5-${{ env.VERSION }}-linux-arm64.tar.gz
             ```
 
             ## Running
 
             ```bash
-            cd nomic-embed-text-v1-5-*
+            cd nomic-embed-v1-5-*
             ./nomic-serve
             # Server starts on http://localhost:8080
             ```
 
-            Optionally set environment variables:
+            ## API Endpoints
+
+            - `POST /txt/embed` - Single text embedding
+            - `POST /txt/batch` - Batch text embeddings
+            - `POST /txt/query` - Query with enforced search_query prefix
+            - `POST /img/embed` - Single image embedding
+            - `POST /img/batch` - Batch image embeddings
+            - `GET /health` - Health check
+            - `GET /docs` - Swagger UI
+
+            ## Environment Variables
+
             - `PORT` - Server port (default: 8080)
-            - `MODEL` - Path to ONNX model file (default: models/txt/model_quantized.onnx)
+            - `TXT_MODEL` - Path to text ONNX model (default: models/txt/model_quantized.onnx)
             - `TOKENIZER` - Path to tokenizer file (default: models/txt/tokenizer.json)
-            - `USE_GPU` - Set to 1 to enable GPU (requires CUDA drivers and ONNX Runtime CUDA providers)
+            - `IMG_MODEL` - Path to vision ONNX model (default: models/img/model_quantized.onnx)
+            - `USE_GPU` - Set to 1 to enable GPU (requires CUDA drivers)
             
-            **Note**: This release includes CPU-only runtime. For GPU support, use the Docker images (`mindthemath/nomic-text-v1.5-rs:*-gpu`) or manually install CUDA libraries.
+            **Note**: This release includes CPU-only runtime. For GPU support, use the Docker images (`mindthemath/nomic-embed-v1.5-rs:*-gpu`) or manually install CUDA libraries.

@@ -1,5 +1,6 @@
 # Multi-stage build for nomic-serve
 # Supports both CPU and GPU (CUDA) deployments
+# Includes text and vision models for multimodal embeddings
 
 # ============================================================================
 # Stage 1: Build
@@ -32,7 +33,8 @@ COPY src ./src
 COPY static ./static
 
 # Build the actual binary
-RUN cargo build --release
+# Touch source files to ensure cargo sees them as newer than cached artifacts
+RUN touch src/main.rs && cargo build --release
 
 # Prepare ONNX Runtime libraries for copying to runtime stage
 # Copy libraries to a known location so we can reliably copy them later
@@ -59,15 +61,19 @@ WORKDIR /app
 # Copy binary from builder
 COPY --from=builder /build/target/release/nomic-serve ./
 
-# Copy model files (use quantized by default)
+# Copy text model files
 COPY models/txt/model_quantized.onnx models/txt/tokenizer.json models/txt/
 
-# Default configuration
+# Copy vision model files
+COPY models/img/model_quantized.onnx models/img/
+
+# Default configuration - full multimodal
 # CORS: Set CORS_ORIGINS="https://example.com,https://app.example.com" to customize
 #       Set DISABLE_CORS=1 to allow all origins
 ENV PORT=8080
-ENV MODEL=models/txt/model_quantized.onnx
+ENV TXT_MODEL=models/txt/model_quantized.onnx
 ENV TOKENIZER=models/txt/tokenizer.json
+ENV IMG_MODEL=models/img/model_quantized.onnx
 
 EXPOSE 8080
 
@@ -98,19 +104,20 @@ COPY --from=builder /build/target/release/nomic-serve ./
 # The directory always exists (created in builder stage) so COPY won't fail
 COPY --from=builder /build/app/lib/ /app/lib/
 
-# Copy model files
+# Copy text model files
 COPY models/txt/model_quantized.onnx models/txt/tokenizer.json models/txt/
+
+# Copy vision model files
+COPY models/img/model_quantized.onnx models/img/
 
 # GPU mode enabled by default
 # Set LD_LIBRARY_PATH to find ONNX Runtime providers
-# Note: The CUDA base image provides CUDA runtime libraries
-# ONNX Runtime providers will be loaded dynamically if available
-# If not found, server automatically falls back to CPU (see logs)
 # CORS: Set CORS_ORIGINS="https://example.com,https://app.example.com" to customize
 #       Set DISABLE_CORS=1 to allow all origins
 ENV PORT=8080
-ENV MODEL=models/txt/model_quantized.onnx
+ENV TXT_MODEL=models/txt/model_quantized.onnx
 ENV TOKENIZER=models/txt/tokenizer.json
+ENV IMG_MODEL=models/img/model_quantized.onnx
 ENV USE_GPU=1
 ENV LD_LIBRARY_PATH=/app/lib:${LD_LIBRARY_PATH}
 
@@ -119,4 +126,3 @@ EXPOSE 8080
 # Use dumb-init to handle signals properly (Ctrl-C, docker stop, etc.)
 ENTRYPOINT ["dumb-init", "--"]
 CMD ["./nomic-serve"]
-
