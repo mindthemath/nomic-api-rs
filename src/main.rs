@@ -102,6 +102,50 @@ impl AppState {
 // Request/Response Types
 // ============================================================================
 
+/// Prefix type for nomic-embed-text-v1.5 model. The prefix is prepended to the input text
+/// as "{prefix}: {text}" to indicate the intended use case.
+#[derive(Deserialize, Serialize, ToSchema, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[schema(example = "search_query")]
+enum Prefix {
+    /// For search queries
+    SearchQuery,
+    /// For search documents
+    SearchDocument,
+    /// For classification tasks
+    Classification,
+    /// For clustering tasks
+    Clustering,
+}
+
+impl Default for Prefix {
+    fn default() -> Self {
+        Prefix::SearchQuery
+    }
+}
+
+impl From<Prefix> for String {
+    fn from(prefix: Prefix) -> Self {
+        match prefix {
+            Prefix::SearchQuery => "search_query".to_string(),
+            Prefix::SearchDocument => "search_document".to_string(),
+            Prefix::Classification => "classification".to_string(),
+            Prefix::Clustering => "clustering".to_string(),
+        }
+    }
+}
+
+impl std::fmt::Display for Prefix {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Prefix::SearchQuery => write!(f, "search_query"),
+            Prefix::SearchDocument => write!(f, "search_document"),
+            Prefix::Classification => write!(f, "classification"),
+            Prefix::Clustering => write!(f, "clustering"),
+        }
+    }
+}
+
 #[derive(Deserialize, ToSchema)]
 struct EmbedRequest {
     /// Text to embed
@@ -112,6 +156,12 @@ struct EmbedRequest {
     #[serde(default = "default_dim")]
     #[schema(example = 768, minimum = 1, maximum = 768)]
     dim: usize,
+    /// Prefix to prepend to the input text. Must be one of: "search_query", "search_document", "classification", "clustering".
+    /// Defaults to "search_query". The prefix will be prepended as "{prefix}: {text}".
+    /// Example: with prefix="search_query" and inputs="hello world", the model receives "search_query: hello world".
+    #[serde(default)]
+    #[schema(example = "search_query")]
+    prefix: Prefix,
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -124,10 +174,20 @@ struct BatchRequest {
     #[serde(default = "default_dim")]
     #[schema(example = 8, minimum = 1, maximum = 768)]
     dim: usize,
+    /// Prefix to prepend to each input text. Must be one of: "search_query", "search_document", "classification", "clustering".
+    /// Defaults to "search_query". The prefix will be prepended as "{prefix}: {text}".
+    #[serde(default)]
+    #[schema(example = "search_document")]
+    prefix: Prefix,
 }
 
 fn default_dim() -> usize {
     768
+}
+
+/// Prepend prefix to text in the format "{prefix}: {text}"
+fn prepend_prefix(prefix: &Prefix, text: &str) -> String {
+    format!("{}: {}", prefix, text)
 }
 
 #[derive(Serialize, ToSchema)]
@@ -190,6 +250,7 @@ struct ErrorResponse {
         BatchResponse,
         HealthResponse,
         ErrorResponse,
+        Prefix,
     ))
 )]
 struct ApiDoc;
@@ -356,7 +417,7 @@ async fn health_handler() -> Json<HealthResponse> {
     request_body = EmbedRequest,
     responses(
         (status = 200, description = "Embedding generated successfully", body = EmbedResponse),
-        (status = 400, description = "Bad request (invalid dim or tokenization failed)", body = ErrorResponse),
+        (status = 400, description = "Bad request (invalid dim, invalid prefix, or tokenization failed)", body = ErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     )
 )]
@@ -374,8 +435,11 @@ async fn embed_handler(
         ));
     }
 
+    // Prepend prefix to text
+    let prefixed_text = prepend_prefix(&req.prefix, &req.inputs);
+
     // Process single text
-    let (mut embedding, tokens) = embed_single(&state, &req.inputs)?;
+    let (mut embedding, tokens) = embed_single(&state, &prefixed_text)?;
 
     // Truncate to requested dimension (Matryoshka embeddings)
     if req.dim < embedding.len() {
@@ -395,7 +459,7 @@ async fn embed_handler(
     request_body = BatchRequest,
     responses(
         (status = 200, description = "Embeddings generated successfully", body = BatchResponse),
-        (status = 400, description = "Bad request (invalid dim or tokenization failed)", body = ErrorResponse),
+        (status = 400, description = "Bad request (invalid dim, invalid prefix, or tokenization failed)", body = ErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     )
 )]
@@ -419,7 +483,9 @@ async fn batch_handler(
     let mut tokens = Vec::with_capacity(req.inputs.len());
 
     for text in &req.inputs {
-        let (mut emb, tok) = embed_single(&state, text)?;
+        // Prepend prefix to text
+        let prefixed_text = prepend_prefix(&req.prefix, text);
+        let (mut emb, tok) = embed_single(&state, &prefixed_text)?;
         // Truncate to requested dimension (Matryoshka embeddings)
         if req.dim < emb.len() {
             emb.truncate(req.dim);
