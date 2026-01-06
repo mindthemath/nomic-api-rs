@@ -116,7 +116,7 @@ run: build check-models
 	./target/release/nomic-serve
 
 run-full: build check-models
-	./target/release/nomic-serve
+	AVG_METHOD=arithmetic TXT_MODEL=models/txt/model.onnx IMG_MODEL=models/img/model.onnx ./target/release/nomic-serve
 
 run-gpu: build-cuda check-models
 	./target/release/nomic-serve

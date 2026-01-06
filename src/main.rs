@@ -143,6 +143,10 @@ struct VisionState {
 pub struct AppState {
     text: Option<Arc<TextState>>,
     vision: Option<Arc<VisionState>>,
+    default_avg_method: image_stats::AveragingMethod,
+    txt_model_path: Option<PathBuf>,
+    tokenizer_path: Option<PathBuf>,
+    img_model_path: Option<PathBuf>,
 }
 
 impl AppState {
@@ -151,8 +155,14 @@ impl AppState {
         tokenizer: Option<PathBuf>,
         img_model: Option<PathBuf>,
         use_gpu: bool,
+        default_avg_method: image_stats::AveragingMethod,
     ) -> anyhow::Result<Self> {
         let cold_start = Instant::now();
+
+        // Clone paths for storing in state
+        let txt_model_path = txt_model.clone();
+        let tokenizer_path = tokenizer.clone();
+        let img_model_path = img_model.clone();
 
         // Load text model if paths provided
         let text = if let (Some(model_path), Some(tok_path)) = (txt_model, tokenizer) {
@@ -206,7 +216,7 @@ impl AppState {
 
         let cold_start_time = cold_start.elapsed();
         info!(
-            "Cold start complete - text model: {}, vision model: {}, time: {:.2}ms",
+            "Cold start complete - text model: {}, vision model: {}, avg_method: {}, time: {:.2}ms",
             if text.is_some() {
                 "loaded"
             } else {
@@ -217,10 +227,21 @@ impl AppState {
             } else {
                 "not loaded"
             },
+            match default_avg_method {
+                image_stats::AveragingMethod::Arithmetic => "arithmetic",
+                image_stats::AveragingMethod::Geometric => "geometric",
+            },
             cold_start_time.as_secs_f64() * 1000.0
         );
 
-        Ok(Self { text, vision })
+        Ok(Self {
+            text,
+            vision,
+            default_avg_method,
+            txt_model_path,
+            tokenizer_path,
+            img_model_path,
+        })
     }
 }
 
@@ -395,6 +416,22 @@ struct HealthResponse {
 }
 
 #[derive(Serialize, ToSchema)]
+struct InfoResponse {
+    /// Default averaging method for image stats
+    #[schema(example = "geometric")]
+    avg_method: String,
+    /// Text model file path (if loaded)
+    #[schema(example = "models/txt/model_quantized.onnx")]
+    txt_model: Option<String>,
+    /// Tokenizer file path (if loaded)
+    #[schema(example = "models/txt/tokenizer.json")]
+    tokenizer: Option<String>,
+    /// Vision model file path (if loaded)
+    #[schema(example = "models/img/model_quantized.onnx")]
+    img_model: Option<String>,
+}
+
+#[derive(Serialize, ToSchema)]
 pub struct ErrorResponse {
     /// Error message
     #[schema(example = "Tokenization failed")]
@@ -415,6 +452,7 @@ pub struct ErrorResponse {
     ),
     paths(
         health_handler,
+        info_handler,
         txt_embed_handler,
         txt_batch_handler,
         txt_query_handler,
@@ -433,6 +471,7 @@ pub struct ErrorResponse {
         ImageBatchRequest,
         ImageBatchResponse,
         HealthResponse,
+        InfoResponse,
         ErrorResponse,
         Prefix,
         image_stats::ImageStatsRequest,
@@ -486,6 +525,16 @@ async fn main() {
         .map(|v| matches!(v.to_lowercase().as_str(), "true" | "1" | "yes" | "y"))
         .unwrap_or(false);
 
+    // Default averaging method for image stats
+    let default_avg_method = std::env::var("AVG_METHOD")
+        .ok()
+        .and_then(|v| match v.to_lowercase().as_str() {
+            "arithmetic" => Some(image_stats::AveragingMethod::Arithmetic),
+            "geometric" => Some(image_stats::AveragingMethod::Geometric),
+            _ => None,
+        })
+        .unwrap_or(image_stats::AveragingMethod::Geometric);
+
     // Determine which models to load based on file existence
     let txt_model = if txt_model_path.exists() && tok_path.exists() {
         Some(txt_model_path.clone())
@@ -511,13 +560,14 @@ async fn main() {
     };
 
     // Initialize application state
-    let state = match AppState::new(txt_model, tokenizer, img_model, use_gpu).await {
-        Ok(state) => state,
-        Err(e) => {
-            eprintln!("Failed to initialize server: {}", e);
-            std::process::exit(1);
-        }
-    };
+    let state =
+        match AppState::new(txt_model, tokenizer, img_model, use_gpu, default_avg_method).await {
+            Ok(state) => state,
+            Err(e) => {
+                eprintln!("Failed to initialize server: {}", e);
+                std::process::exit(1);
+            }
+        };
 
     let device = if use_gpu { "GPU" } else { "CPU" };
     let text_status = if state.text.is_some() { "✓" } else { "✗" };
@@ -540,6 +590,7 @@ async fn main() {
     // Build router - base routes
     let app = Router::new()
         .route("/health", get(health_handler))
+        .route("/info", get(info_handler))
         // Text endpoints (canonical)
         .route("/txt/embed", post(txt_embed_handler))
         .route("/txt/batch", post(txt_batch_handler))
@@ -652,6 +703,36 @@ async fn health_handler(State(state): State<AppState>) -> Json<HealthResponse> {
         status: "OK".to_string(),
         text_model: state.text.is_some(),
         vision_model: state.vision.is_some(),
+    })
+}
+
+/// Get server information including model paths and configuration
+#[utoipa::path(
+    get,
+    path = "/info",
+    responses(
+        (status = 200, description = "Server information", body = InfoResponse)
+    ),
+    tag = "health"
+)]
+async fn info_handler(State(state): State<AppState>) -> Json<InfoResponse> {
+    Json(InfoResponse {
+        avg_method: match state.default_avg_method {
+            image_stats::AveragingMethod::Arithmetic => "arithmetic".to_string(),
+            image_stats::AveragingMethod::Geometric => "geometric".to_string(),
+        },
+        txt_model: state
+            .txt_model_path
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string()),
+        tokenizer: state
+            .tokenizer_path
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string()),
+        img_model: state
+            .img_model_path
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string()),
     })
 }
 
@@ -938,12 +1019,60 @@ async fn img_batch_handler(
 // HTTP Handlers - OpenAPI
 // ============================================================================
 
-async fn openapi_handler() -> Json<serde_json::Value> {
+async fn openapi_handler(State(state): State<AppState>) -> Json<serde_json::Value> {
     let openapi = ApiDoc::openapi();
     let mut spec: serde_json::Value =
         serde_json::to_value(&openapi).unwrap_or(serde_json::json!({}));
     if let Some(obj) = spec.as_object_mut() {
         obj.insert("openapi".to_string(), serde_json::json!("3.1.0"));
+
+        // Update the averaging_method example to reflect the runtime default
+        if let Some(components) = obj.get_mut("components") {
+            if let Some(components_obj) = components.as_object_mut() {
+                if let Some(schemas) = components_obj.get_mut("schemas") {
+                    if let Some(schemas_obj) = schemas.as_object_mut() {
+                        if let Some(image_stats_request) = schemas_obj.get_mut("ImageStatsRequest")
+                        {
+                            if let Some(props) = image_stats_request.get_mut("properties") {
+                                if let Some(avg_method) = props.get_mut("averaging_method") {
+                                    if let Some(avg_method_obj) = avg_method.as_object_mut() {
+                                        let default_example = match state.default_avg_method {
+                                            image_stats::AveragingMethod::Arithmetic => {
+                                                "arithmetic"
+                                            }
+                                            image_stats::AveragingMethod::Geometric => "geometric",
+                                        };
+                                        avg_method_obj.insert(
+                                            "example".to_string(),
+                                            serde_json::json!(default_example),
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        // Also update AverageColorInfo.method example
+                        if let Some(avg_color_info) = schemas_obj.get_mut("AverageColorInfo") {
+                            if let Some(props) = avg_color_info.get_mut("properties") {
+                                if let Some(method) = props.get_mut("method") {
+                                    if let Some(method_obj) = method.as_object_mut() {
+                                        let default_example = match state.default_avg_method {
+                                            image_stats::AveragingMethod::Arithmetic => {
+                                                "arithmetic"
+                                            }
+                                            image_stats::AveragingMethod::Geometric => "geometric",
+                                        };
+                                        method_obj.insert(
+                                            "example".to_string(),
+                                            serde_json::json!(default_example),
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
     Json(spec)
 }

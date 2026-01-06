@@ -35,9 +35,9 @@ const ALPHA_THRESHOLD: u8 = 128;
 #[serde(rename_all = "lowercase")]
 pub enum AveragingMethod {
     /// Arithmetic mean (simple average)
-    #[default]
     Arithmetic,
     /// Geometric mean (better for color perception)
+    #[default]
     Geometric,
 }
 
@@ -55,10 +55,9 @@ pub struct ImageStatsRequest {
     /// Image content: URL (http/https), data URL (data:image/...), or raw base64
     #[schema(example = "https://picsum.photos/400/300")]
     pub content: String,
-    /// Averaging method for color calculation
+    /// Averaging method for color calculation (defaults to AVG_METHOD env var or geometric)
     #[serde(default)]
-    #[schema(example = "geometric")]
-    pub averaging_method: AveragingMethod,
+    pub averaging_method: Option<AveragingMethod>,
 }
 
 /// RGB color with hex representation
@@ -82,7 +81,7 @@ pub struct AverageColorInfo {
     #[schema(example = "#804d33")]
     pub hex: String,
     /// Method used for averaging
-    #[schema(example = "geometric")]
+    #[schema(example = "arithmetic")]
     pub method: String,
 }
 
@@ -551,7 +550,7 @@ fn extract_exif_data(image_bytes: &[u8]) -> HashMap<String, serde_json::Value> {
     tag = "image"
 )]
 pub async fn img_stats_handler(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Json(req): Json<ImageStatsRequest>,
 ) -> Result<Json<ImageStatsResponse>, Error> {
     let start = Instant::now();
@@ -563,8 +562,11 @@ pub async fn img_stats_handler(
     // Extract EXIF data from original bytes
     let exif_data = extract_exif_data(&image_bytes);
 
+    // Use provided averaging method or fall back to default from state
+    let averaging_method = req.averaging_method.unwrap_or(state.default_avg_method);
+
     // Perform color analysis
-    let color_data = get_image_colors(&image, req.averaging_method);
+    let color_data = get_image_colors(&image, averaging_method);
 
     let total_time = start.elapsed();
     info!(
