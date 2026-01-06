@@ -1,9 +1,13 @@
 name: Build and Push Docker Images
 
 on:
-  push:
-    tags:
-      - 'v*'  # Trigger on version tags like v1.0.0
+  # push:
+  #   tags:
+  #     - 'v*'  # Trigger on version tags like v1.0.0
+  #   paths-ignore:
+  #     - .github/workflows/release.yml
+  #     - makefile
+  #     - '*.md'
   workflow_dispatch:  # Allow manual trigger
     inputs:
       tag:
