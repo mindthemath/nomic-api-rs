@@ -1,0 +1,124 @@
+name: Release Artifacts
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build-linux:
+    strategy:
+      matrix:
+        include:
+          - platform: linux/amd64
+            artifact: linux-x64
+            runner: ubuntu-latest
+        #   - platform: linux/arm64
+        #     artifact: linux-arm64
+        #     runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    env:
+      VERSION: ${{ github.ref_name }}
+    steps:
+      - name: Sanitize version
+        run: echo "VERSION=${VERSION//\//-}" >> $GITHUB_ENV
+
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Download model files
+        run: |
+          mkdir -p models
+          wget --content-disposition -q \
+            -O models/tokenizer.json \
+            https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/resolve/main/tokenizer.json
+          wget --content-disposition -q \
+            -O models/model_quantized.onnx \
+            https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/resolve/main/onnx/model_quantized.onnx
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image for ${{ matrix.platform }}
+        run: |
+          docker buildx build \
+            --platform ${{ matrix.platform }} \
+            --load \
+            -t nomic-embed-text-v1-5:${{ matrix.artifact }} \
+            .
+
+      - name: Extract artifacts
+        run: |
+          docker create --name temp-extract nomic-embed-text-v1-5:${{ matrix.artifact }}
+          mkdir -p release
+          docker cp temp-extract:/app/nomic-serve release/
+          docker cp temp-extract:/app/lib release/ || true
+          docker cp temp-extract:/app/models release/
+          docker rm temp-extract
+
+      - name: Create tarball
+        run: |
+          cd release
+          mkdir -p nomic-embed-text-v1-5-${VERSION}-${{ matrix.artifact }}
+          mv nomic-serve models nomic-embed-text-v1-5-${VERSION}-${{ matrix.artifact }}/
+          # Copy lib directory if it exists (for GPU support)
+          [ -d lib ] && mv lib nomic-embed-text-v1-5-${VERSION}-${{ matrix.artifact }}/ || true
+          tar -czvf ../nomic-embed-text-v1-5-${VERSION}-${{ matrix.artifact }}.tar.gz nomic-embed-text-v1-5-${VERSION}-${{ matrix.artifact }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: nomic-embed-text-v1-5-*.tar.gz
+
+  release:
+    needs: build-linux
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ github.ref_name }}
+    steps:
+      - name: Sanitize version
+        run: echo "VERSION=${VERSION//\//-}" >> $GITHUB_ENV
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true
+          body: |
+            ## Installation
+
+            Download the tarball for your architecture and extract:
+
+            ```bash
+            # For x86_64
+            tar -xzf nomic-embed-text-v1-5-${{ env.VERSION }}-linux-x64.tar.gz
+
+            # For ARM64 (Raspberry Pi, AWS Graviton, Apple Silicon Linux VMs, etc.)
+            tar -xzf nomic-embed-text-v1-5-${{ env.VERSION }}-linux-arm64.tar.gz
+            ```
+
+            ## Running
+
+            ```bash
+            cd nomic-embed-text-v1-5-*
+            ./nomic-serve
+            # Server starts on http://localhost:8080
+            ```
+
+            Optionally set environment variables:
+            - `PORT` - Server port (default: 8080)
+            - `MODEL` - Path to ONNX model file (default: models/model_quantized.onnx)
+            - `TOKENIZER` - Path to tokenizer file (default: models/tokenizer.json)
+            - `USE_GPU` - Set to 1 to enable GPU (requires CUDA libraries in lib/)
+            - `LD_LIBRARY_PATH` - Add lib/ to this for GPU support (e.g., `export LD_LIBRARY_PATH=./lib:$LD_LIBRARY_PATH`)
