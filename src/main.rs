@@ -118,6 +118,8 @@ impl AppState {
         img_model: Option<PathBuf>,
         use_gpu: bool,
     ) -> anyhow::Result<Self> {
+        let cold_start = Instant::now();
+
         // Load text model if paths provided
         let text = if let (Some(model_path), Some(tok_path)) = (txt_model, tokenizer) {
             info!("Loading text model: {:?}", model_path);
@@ -167,6 +169,22 @@ impl AppState {
         } else {
             None
         };
+
+        let cold_start_time = cold_start.elapsed();
+        info!(
+            "Cold start complete - text model: {}, vision model: {}, time: {:.2}ms",
+            if text.is_some() {
+                "loaded"
+            } else {
+                "not loaded"
+            },
+            if vision.is_some() {
+                "loaded"
+            } else {
+                "not loaded"
+            },
+            cold_start_time.as_secs_f64() * 1000.0
+        );
 
         Ok(Self { text, vision })
     }
@@ -627,10 +645,16 @@ async fn txt_embed_handler(
         embedding.truncate(req.dim);
     }
 
+    let total_time = start.elapsed();
+    info!(
+        "Text embed timing - total: {:.2}ms",
+        total_time.as_secs_f64() * 1000.0
+    );
+
     Ok(Json(TextEmbedResponse {
         embedding,
         tokens,
-        time_ms: start.elapsed().as_secs_f64() * 1000.0,
+        time_ms: total_time.as_secs_f64() * 1000.0,
     }))
 }
 
@@ -678,10 +702,18 @@ async fn txt_batch_handler(
         tokens.push(tok);
     }
 
+    let total_time = start.elapsed();
+    info!(
+        "Text batch timing - count: {}, total: {:.2}ms, avg: {:.2}ms",
+        req.inputs.len(),
+        total_time.as_secs_f64() * 1000.0,
+        total_time.as_secs_f64() * 1000.0 / req.inputs.len() as f64
+    );
+
     Ok(Json(TextBatchResponse {
         embeddings,
         tokens,
-        time_ms: start.elapsed().as_secs_f64() * 1000.0,
+        time_ms: total_time.as_secs_f64() * 1000.0,
     }))
 }
 
@@ -724,10 +756,16 @@ async fn txt_query_handler(
         embedding.truncate(req.dim);
     }
 
+    let total_time = start.elapsed();
+    info!(
+        "Text query timing - total: {:.2}ms",
+        total_time.as_secs_f64() * 1000.0
+    );
+
     Ok(Json(TextEmbedResponse {
         embedding,
         tokens,
-        time_ms: start.elapsed().as_secs_f64() * 1000.0,
+        time_ms: total_time.as_secs_f64() * 1000.0,
     }))
 }
 
@@ -953,10 +991,6 @@ async fn fetch_image_url(url: &str) -> Result<Vec<u8>, Error> {
         )
     })?;
     let request_time = request_start.elapsed();
-    info!(
-        "Image fetch - request sent in {:.2}ms",
-        request_time.as_secs_f64() * 1000.0
-    );
 
     if !response.status().is_success() {
         return Err(Error(
@@ -1034,6 +1068,7 @@ fn mean_pool(embeddings: &[f32], attention_mask: &[i64], seq_len: usize) -> Vec<
 
 /// Embed single text, returns 768-dim embedding
 fn embed_text(state: &TextState, text: &str) -> Result<(Vec<f32>, usize), Error> {
+    let tokenize_start = Instant::now();
     let encoding = state
         .tokenizer
         .encode(text, true)
@@ -1047,7 +1082,9 @@ fn embed_text(state: &TextState, text: &str) -> Result<(Vec<f32>, usize), Error>
         .iter()
         .map(|&i| i as i64)
         .collect();
+    let tokenize_time = tokenize_start.elapsed();
 
+    let prepare_start = Instant::now();
     let input_shape = vec![1i64, token_count as i64];
     let input_ids_value: Value = Value::from_array((input_shape.clone(), ids))?.into();
     let token_type_ids_value: Value =
@@ -1069,11 +1106,16 @@ fn embed_text(state: &TextState, text: &str) -> Result<(Vec<f32>, usize), Error>
             SessionInputValue::from(attention_mask_value),
         ),
     ];
+    let prepare_time = prepare_start.elapsed();
 
+    let inference_start = Instant::now();
     let mut session_guard = state.session.lock().unwrap();
     let outputs = session_guard.run(SessionInputs::from(inputs_vec))?;
+    let inference_time = inference_start.elapsed();
+
     let (output_shape, raw_embedding) = outputs[0].try_extract_tensor::<f32>()?.to_owned();
 
+    let postprocess_start = Instant::now();
     let embedding_vec = raw_embedding.to_vec();
     let shape_dims: Vec<usize> = output_shape.iter().map(|&d| d as usize).collect();
 
@@ -1093,6 +1135,15 @@ fn embed_text(state: &TextState, text: &str) -> Result<(Vec<f32>, usize), Error>
 
     // L2 normalize for cosine similarity compatibility
     l2_normalize(&mut embedding);
+    let postprocess_time = postprocess_start.elapsed();
+
+    info!(
+        "Text inference timing - tokenize: {:.2}ms, prepare: {:.2}ms, ONNX: {:.2}ms, postprocess: {:.2}ms",
+        tokenize_time.as_secs_f64() * 1000.0,
+        prepare_time.as_secs_f64() * 1000.0,
+        inference_time.as_secs_f64() * 1000.0,
+        postprocess_time.as_secs_f64() * 1000.0
+    );
 
     Ok((embedding, token_count))
 }
