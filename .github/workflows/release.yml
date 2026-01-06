@@ -41,23 +41,28 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Download model files (using makefile)
+      - name: Download model files (targeted)
         run: |
-          # Download all model variants (makefile handles this)
-          make -j model-txt model-img
-
-      - name: Build image (using makefile)
-        run: |
-          # Use makefile targets directly - both platforms use native docker build (no buildx needed)
+          # Download only the models needed for this build variant
           if [[ "${{ matrix.txt_model }}" == "model_quantized.onnx" ]]; then
-            make docker-build-cpu
-            # Retag to match artifact name (makefile creates mindthemath/nomic-embed-v1.5-rs:latest-cpu)
-            docker tag mindthemath/nomic-embed-v1.5-rs:latest-cpu nomic-embed-v1-5:${{ matrix.artifact }}
+            # Quantized build - download quantized models only
+            bash scripts/download_text_models.sh quantized
+            bash scripts/download_vision_models.sh quantized
           else
-            make docker-build-cpu-full
-            # Retag to match artifact name (makefile creates mindthemath/nomic-embed-v1.5-rs:latest-cpu-full)
-            docker tag mindthemath/nomic-embed-v1.5-rs:latest-cpu-full nomic-embed-v1-5:${{ matrix.artifact }}
+            # Full precision build - download fp32 models only
+            bash scripts/download_text_models.sh fp32
+            bash scripts/download_vision_models.sh fp32
           fi
+
+      - name: Build image
+        run: |
+          # Build directly with docker (matching makefile approach but bypassing dependencies)
+          # Both platforms use native docker build (no buildx needed)
+          docker build --target runtime-cpu \
+            --build-arg TXT_MODEL_FILE=${{ matrix.txt_model }} \
+            --build-arg IMG_MODEL_FILE=${{ matrix.img_model }} \
+            -t nomic-embed-v1-5:${{ matrix.artifact }} \
+            .
 
       - name: Extract artifacts
         run: |
