@@ -119,7 +119,7 @@ run-full: build check-models
 	AVG_METHOD=arithmetic TXT_MODEL=models/txt/model.onnx IMG_MODEL=models/img/model.onnx ./target/release/nomic-serve
 
 run-gpu: build-cuda check-models
-	./target/release/nomic-serve
+	USE_GPU=1 ./target/release/nomic-serve
 
 # Run server (image-stats is now always included, no model files required for /img/stats)
 run-stats: build

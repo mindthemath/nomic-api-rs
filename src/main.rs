@@ -147,6 +147,7 @@ pub struct AppState {
     txt_model_path: Option<PathBuf>,
     tokenizer_path: Option<PathBuf>,
     img_model_path: Option<PathBuf>,
+    use_gpu: bool,
 }
 
 impl AppState {
@@ -241,6 +242,7 @@ impl AppState {
             txt_model_path,
             tokenizer_path,
             img_model_path,
+            use_gpu,
         })
     }
 }
@@ -420,6 +422,9 @@ struct InfoResponse {
     /// Default averaging method for image stats
     #[schema(example = "geometric")]
     avg_method: String,
+    /// CUDA/GPU support enabled
+    #[schema(example = true)]
+    load_cuda: bool,
     /// Text model file path (if loaded)
     #[schema(example = "models/txt/model_quantized.onnx")]
     txt_model: Option<String>,
@@ -686,7 +691,7 @@ fn build_cors_layer() -> CorsLayer {
 }
 
 // ============================================================================
-// HTTP Handlers - Health
+// HTTP Handlers - Status
 // ============================================================================
 
 /// Check server health and model availability
@@ -696,7 +701,7 @@ fn build_cors_layer() -> CorsLayer {
     responses(
         (status = 200, description = "Server is healthy", body = HealthResponse)
     ),
-    tag = "health"
+    tag = "status"
 )]
 async fn health_handler(State(state): State<AppState>) -> Json<HealthResponse> {
     Json(HealthResponse {
@@ -713,7 +718,7 @@ async fn health_handler(State(state): State<AppState>) -> Json<HealthResponse> {
     responses(
         (status = 200, description = "Server information", body = InfoResponse)
     ),
-    tag = "health"
+    tag = "status"
 )]
 async fn info_handler(State(state): State<AppState>) -> Json<InfoResponse> {
     Json(InfoResponse {
@@ -721,6 +726,7 @@ async fn info_handler(State(state): State<AppState>) -> Json<InfoResponse> {
             image_stats::AveragingMethod::Arithmetic => "arithmetic".to_string(),
             image_stats::AveragingMethod::Geometric => "geometric".to_string(),
         },
+        load_cuda: state.use_gpu,
         txt_model: state
             .txt_model_path
             .as_ref()
