@@ -279,9 +279,7 @@ def run_test_with_image_data(
     except requests.exceptions.ConnectionError:
         return (
             False,
-            [
-                "Failed to connect to Rust server. Is it running with --features image-stats?"
-            ],
+            ["Failed to connect to Rust server. Is it running?"],
             {},
         )
     except Exception as e:
