@@ -2,7 +2,7 @@
 # nomic-serve Makefile
 # ==============================================================================
 
-.PHONY: model fmt build clean run health docs openapi test test-list models-all test-models \
+.PHONY: model fmt build clean run health docs openapi test test-list test-dim models-all test-models \
         docker-build docker-build-cpu docker-build-gpu docker-push docker-push-cpu docker-push-gpu
 
 # ==============================================================================
@@ -77,13 +77,20 @@ test:
 	@curl -s -X POST localhost:8080/embed \
 		-H 'content-type: application/json' \
 		-d '{"inputs": "ONNX in Rust is fast"}' | \
-		jq '{tokens: .tokens, time_ms: (.time_ms | floor), dims: (.embedding | length), sample: (.embedding[0:5] | map(. * 1000 | floor / 1000))}'
+		jq '{tokens: .tokens, time_ms: (.time_ms | floor), sample: (.embedding[0:5] | map(. * 1000 | floor / 1000))}'
 
 test-list:
 	@curl -s -X POST localhost:8080/batch \
 		-H 'content-type: application/json' \
 		-d '{"inputs": ["ONNX in Rust is fast", "Python is also great", "Embeddings are useful"]}' | \
 		jq '{count: (.embeddings | length), tokens, time_ms: (.time_ms | floor), samples: [.embeddings[] | .[0:3] | map(. * 1000 | floor / 1000)]}'
+
+test-dim:
+	@echo "Testing Matryoshka embeddings (dim=128)..."
+	@curl -s -X POST localhost:8080/embed \
+		-H 'content-type: application/json' \
+		-d '{"inputs": "ONNX in Rust is fast", "dim": 128}' | \
+		jq '{tokens: .tokens, time_ms: (.time_ms | floor), sample: (.embedding[0:5] | map(. * 1000 | floor / 1000))}'
 
 # Compare all model variants against baseline (model.onnx, fp32)
 # Requires: models-all, build, and Python requests library

@@ -107,6 +107,11 @@ struct EmbedRequest {
     /// Text to embed
     #[schema(example = "ONNX in Rust is fast")]
     inputs: String,
+    /// Embedding dimension (1-768). Supports Matryoshka embeddings - truncate to smaller dims for faster similarity search.
+    /// Defaults to 768 (full dimension).
+    #[serde(default = "default_dim")]
+    #[schema(example = 768, minimum = 1, maximum = 768)]
+    dim: usize,
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -114,11 +119,20 @@ struct BatchRequest {
     /// List of texts to embed
     #[schema(example = json!(["Hello world", "Goodbye world"]))]
     inputs: Vec<String>,
+    /// Embedding dimension (1-768). Supports Matryoshka embeddings - truncate to smaller dims for faster similarity search.
+    /// Defaults to 768 (full dimension).
+    #[serde(default = "default_dim")]
+    #[schema(example = 8, minimum = 1, maximum = 768)]
+    dim: usize,
+}
+
+fn default_dim() -> usize {
+    768
 }
 
 #[derive(Serialize, ToSchema)]
 struct EmbedResponse {
-    /// 768-dimensional embedding vector
+    /// Embedding vector (dimension specified by request `dim` parameter, default 768)
     #[schema(example = json!([0.123, 0.456, -0.789]))]
     embedding: Vec<f32>,
     /// Number of tokens in the input
@@ -131,7 +145,7 @@ struct EmbedResponse {
 
 #[derive(Serialize, ToSchema)]
 struct BatchResponse {
-    /// List of 768-dimensional embedding vectors (one per input)
+    /// List of embedding vectors (one per input, dimension specified by request `dim` parameter, default 768)
     #[schema(example = json!([[0.123, 0.456], [0.789, -0.123]]))]
     embeddings: Vec<Vec<f32>>,
     /// Token count for each input
@@ -342,7 +356,7 @@ async fn health_handler() -> Json<HealthResponse> {
     request_body = EmbedRequest,
     responses(
         (status = 200, description = "Embedding generated successfully", body = EmbedResponse),
-        (status = 400, description = "Bad request (tokenization failed)", body = ErrorResponse),
+        (status = 400, description = "Bad request (invalid dim or tokenization failed)", body = ErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     )
 )]
@@ -352,8 +366,21 @@ async fn embed_handler(
 ) -> Result<Json<EmbedResponse>, Error> {
     let start = Instant::now();
 
+    // Validate dimension
+    if req.dim == 0 || req.dim > 768 {
+        return Err(Error(
+            StatusCode::BAD_REQUEST,
+            format!("dim must be between 1 and 768, got {}", req.dim),
+        ));
+    }
+
     // Process single text
-    let (embedding, tokens) = embed_single(&state, &req.inputs)?;
+    let (mut embedding, tokens) = embed_single(&state, &req.inputs)?;
+
+    // Truncate to requested dimension (Matryoshka embeddings)
+    if req.dim < embedding.len() {
+        embedding.truncate(req.dim);
+    }
 
     Ok(Json(EmbedResponse {
         embedding,
@@ -368,7 +395,7 @@ async fn embed_handler(
     request_body = BatchRequest,
     responses(
         (status = 200, description = "Embeddings generated successfully", body = BatchResponse),
-        (status = 400, description = "Bad request (tokenization failed)", body = ErrorResponse),
+        (status = 400, description = "Bad request (invalid dim or tokenization failed)", body = ErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     )
 )]
@@ -378,13 +405,25 @@ async fn batch_handler(
 ) -> Result<Json<BatchResponse>, Error> {
     let start = Instant::now();
 
+    // Validate dimension
+    if req.dim == 0 || req.dim > 768 {
+        return Err(Error(
+            StatusCode::BAD_REQUEST,
+            format!("dim must be between 1 and 768, got {}", req.dim),
+        ));
+    }
+
     // Process each text individually - batching causes cross-sample interference
     // with this model (see README.md for explanation)
     let mut embeddings = Vec::with_capacity(req.inputs.len());
     let mut tokens = Vec::with_capacity(req.inputs.len());
 
     for text in &req.inputs {
-        let (emb, tok) = embed_single(&state, text)?;
+        let (mut emb, tok) = embed_single(&state, text)?;
+        // Truncate to requested dimension (Matryoshka embeddings)
+        if req.dim < emb.len() {
+            emb.truncate(req.dim);
+        }
         embeddings.push(emb);
         tokens.push(tok);
     }

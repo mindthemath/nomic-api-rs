@@ -37,8 +37,11 @@ Generate embedding for a single text.
 
 **Request:**
 ```json
-{"inputs": "Hello world"}
+{"inputs": "Hello world", "dim": 768}
 ```
+
+- `inputs` (required): Text to embed
+- `dim` (optional): Embedding dimension (1-768). Defaults to 768. Supports [Matryoshka embeddings](https://huggingface.co/blog/matryoshka) - use smaller dimensions for faster similarity search.
 
 **Response:**
 ```json
@@ -49,13 +52,22 @@ Generate embedding for a single text.
 }
 ```
 
+**Example with reduced dimension:**
+```json
+{"inputs": "Hello world", "dim": 128}
+```
+Returns a 128-dimensional embedding (faster similarity search, slightly lower quality).
+
 ### `POST /batch`
 Generate embeddings for multiple texts.
 
 **Request:**
 ```json
-{"inputs": ["Hello world", "Goodbye world"]}
+{"inputs": ["Hello world", "Goodbye world"], "dim": 8}
 ```
+
+- `inputs` (required): List of texts to embed
+- `dim` (optional): Embedding dimension (1-768). Defaults to 768. Applied to all embeddings in the batch.
 
 **Response:**
 ```json
@@ -111,6 +123,39 @@ DISABLE_CORS=1 ./nomic-serve
 ```
 
 To modify the default allowed origins, edit `DEFAULT_CORS_ORIGINS` in `src/main.rs`.
+
+---
+
+## Matryoshka Embeddings
+
+The nomic-embed-text-v1.5 model supports **Matryoshka embeddings** - variable-dimension embeddings that maintain quality at reduced dimensions. Use the `dim` parameter to truncate embeddings for faster similarity search.
+
+**Benefits:**
+- **Faster similarity search**: Smaller vectors = faster distance calculations
+- **Reduced storage**: Store fewer dimensions per embedding
+- **Quality preserved**: Lower dimensions maintain high quality for most use cases
+
+**Recommended dimensions:**
+- `768` (default): Full quality, best for fine-grained tasks
+- `512`: ~99% quality, good balance
+- `256`: ~95% quality, faster search
+- `128`: ~90% quality, very fast search
+- `64`: ~85% quality, fastest search
+
+**Example:**
+```bash
+# Full dimension (default)
+curl -X POST localhost:8080/embed \
+  -H 'content-type: application/json' \
+  -d '{"inputs": "Hello world"}'
+
+# Reduced dimension for faster search
+curl -X POST localhost:8080/embed \
+  -H 'content-type: application/json' \
+  -d '{"inputs": "Hello world", "dim": 128}'
+```
+
+**Important:** All embeddings in a batch use the same `dim` value. For consistent similarity search, always use the same `dim` for all embeddings you compare.
 
 ---
 
