@@ -71,7 +71,12 @@ target/release/nomic-serve: src/main.rs Cargo.toml static/swagger-ui/index.html
 	cargo build --release
 
 build: fmt target/release/nomic-serve
-	@echo "✓ Build complete"
+	@echo "✓ Build complete (CPU only)"
+
+# Build with CUDA support (Linux only, requires NVIDIA drivers)
+build-cuda: fmt
+	cargo build --release --features cuda
+	@echo "✓ Build complete (with CUDA support)"
 
 clean:
 	rm -rf target

@@ -94,8 +94,72 @@ jobs:
           name: ${{ matrix.artifact }}
           path: nomic-embed-v1-5-*.tar.gz
 
+  build-macos:
+    strategy:
+      matrix:
+        include:
+          - artifact: macos-arm64-quantized
+            runner: macos-latest
+            txt_model: model_quantized.onnx
+            img_model: model_quantized.onnx
+          - artifact: macos-arm64-full
+            runner: macos-latest
+            txt_model: model.onnx
+            img_model: model.onnx
+    runs-on: ${{ matrix.runner }}
+    env:
+      VERSION: ${{ github.ref_name }}
+    steps:
+      - name: Sanitize version
+        run: echo "VERSION=${VERSION//\//-}" >> $GITHUB_ENV
+
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Download model files (targeted)
+        run: |
+          # Download only the models needed for this build variant
+          if [[ "${{ matrix.txt_model }}" == "model_quantized.onnx" ]]; then
+            # Quantized build - download quantized models only
+            bash scripts/download_text_models.sh quantized
+            bash scripts/download_vision_models.sh quantized
+          else
+            # Full precision build - download fp32 models only
+            bash scripts/download_text_models.sh fp32
+            bash scripts/download_vision_models.sh fp32
+          fi
+
+      - name: Verify model files exist
+        run: |
+          # Verify the required model files exist before building
+          echo "Verifying model files for build..."
+          ls -lh models/txt/${{ matrix.txt_model }}
+          ls -lh models/txt/tokenizer.json
+          ls -lh models/img/${{ matrix.img_model }}
+          echo "✓ All required model files present"
+
+      - name: Build binary
+        run: cargo build --release
+
+      - name: Package artifacts
+        run: |
+          mkdir -p release/nomic-embed-v1-5-${VERSION}-${{ matrix.artifact }}
+          cp target/release/nomic-serve release/nomic-embed-v1-5-${VERSION}-${{ matrix.artifact }}/
+          cp -r models release/nomic-embed-v1-5-${VERSION}-${{ matrix.artifact }}/
+          cd release
+          tar -czvf nomic-embed-v1-5-${VERSION}-${{ matrix.artifact }}.tar.gz nomic-embed-v1-5-${VERSION}-${{ matrix.artifact }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: nomic-embed-v1-5-*.tar.gz
+
   release:
-    needs: build-linux
+    needs: [build-linux, build-macos]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
@@ -138,6 +202,12 @@ jobs:
 
             # ARM64 - Full precision
             tar -xzf nomic-embed-v1-5-${{ env.VERSION }}-linux-arm64-full.tar.gz
+
+            # macOS (Apple Silicon M1/M2/M3) - Quantized
+            tar -xzf nomic-embed-v1-5-${{ env.VERSION }}-macos-arm64-quantized.tar.gz
+
+            # macOS (Apple Silicon M1/M2/M3) - Full precision
+            tar -xzf nomic-embed-v1-5-${{ env.VERSION }}-macos-arm64-full.tar.gz
             ```
 
             ## Running

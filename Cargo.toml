@@ -3,14 +3,17 @@ name = "nomic-serve"
 version = "0.2.0"
 edition = "2021"
 
+[features]
+default = []
+cuda = ["ort/cuda"]  # Enable CUDA support (Linux only, requires NVIDIA drivers)
+
 [dependencies]
 anyhow        = "1"
 axum          = "0.7"
 base64        = "0.22"
 image         = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
 ndarray       = "0.15"
-# ort           = "1.16"   # <-- stable
-ort           = { version = "2.0.0-rc.10", features = ["ndarray", "cuda"] }
+ort           = { version = "2.0.0-rc.10", features = ["ndarray"] }
 reqwest       = { version = "0.12", default-features = false, features = ["rustls-tls", "trust-dns"] }
 serde         = { version = "1", features = ["derive"] }
 serde_json    = "1"

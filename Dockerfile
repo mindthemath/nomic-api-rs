@@ -26,7 +26,8 @@ RUN mkdir -p src static/swagger-ui && \
     echo "<!-- placeholder -->" > static/swagger-ui/index.html
 
 # Build dependencies (cached layer)
-RUN cargo build --release && rm -rf src static
+# Enable cuda feature for Linux builds (ONNX Runtime will use GPU if available, falls back to CPU)
+RUN cargo build --release --features cuda && rm -rf src static
 
 # Copy source code and static files (needed for include_str! at compile time)
 COPY src ./src
@@ -34,7 +35,7 @@ COPY static ./static
 
 # Build the actual binary
 # Touch source files to ensure cargo sees them as newer than cached artifacts
-RUN touch src/main.rs && cargo build --release
+RUN touch src/main.rs && cargo build --release --features cuda
 
 # Prepare ONNX Runtime libraries for copying to runtime stage
 # Copy libraries to a known location so we can reliably copy them later
