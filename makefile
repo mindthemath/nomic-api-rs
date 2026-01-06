@@ -13,14 +13,16 @@
 
 # Text model (nomic-embed-text-v1.5)
 model-txt:
-	@bash scripts/download_text_models.sh defualt fp32
+	@bash scripts/download_text_models.sh quantized
+	@bash scripts/download_text_models.sh fp32
 
 model-txt-all:
 	@bash scripts/download_text_models.sh all
 
 # Vision model (nomic-embed-vision-v1.5)
 model-img:
-	@bash scripts/download_vision_models.sh default fp32
+	@bash scripts/download_vision_models.sh quantized
+	@bash scripts/download_vision_models.sh fp32
 
 model-img-all:
 	@bash scripts/download_vision_models.sh all
