@@ -26,12 +26,15 @@ download() {
     echo "✓ $filename downloaded"
 }
 
-# Preprocessor config (required for image preprocessing)
-download "preprocessor_config.json" "$BASE_URL/preprocessor_config.json"
-
 # Model variants
 case "${1:-default}" in
+    config)
+        # Only download preprocessor config (for reference, not required at runtime)
+        download "preprocessor_config.json" "$BASE_URL/preprocessor_config.json"
+        ;;
     all)
+        # Download preprocessor config + all model variants
+        download "preprocessor_config.json" "$BASE_URL/preprocessor_config.json"
         download "model.onnx" "$BASE_URL/onnx/model.onnx"
         download "model_fp16.onnx" "$BASE_URL/onnx/model_fp16.onnx"
         download "model_quantized.onnx" "$BASE_URL/onnx/model_quantized.onnx"
@@ -62,11 +65,12 @@ case "${1:-default}" in
         download "model_bnb4.onnx" "$BASE_URL/onnx/model_bnb4.onnx"
         ;;
     *)
-        echo "Usage: $0 [default|all|fp32|fp16|quantized|int8|uint8|q4|bnb4]"
+        echo "Usage: $0 [default|all|fp32|fp16|quantized|int8|uint8|q4|bnb4|config]"
         echo ""
         echo "Variants:"
         echo "  default   - model_quantized.onnx (int8, recommended for CPU)"
-        echo "  all       - all model variants"
+        echo "  all       - all model variants + preprocessor_config.json"
+        echo "  config    - preprocessor_config.json only (for reference)"
         echo "  fp32      - model.onnx (374 MB, full precision)"
         echo "  fp16      - model_fp16.onnx (187 MB, half precision, good for GPU)"
         echo "  quantized - model_quantized.onnx (97 MB, int8)"
@@ -74,6 +78,8 @@ case "${1:-default}" in
         echo "  uint8     - model_uint8.onnx (97 MB, uint8)"
         echo "  q4        - model_q4.onnx (62 MB, 4-bit weights)"
         echo "  bnb4      - model_bnb4.onnx (56 MB, bitsandbytes 4-bit)"
+        echo ""
+        echo "Note: preprocessor_config.json is not required at runtime (constants are hardcoded in Rust)"
         exit 1
         ;;
 esac
