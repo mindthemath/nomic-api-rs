@@ -4,11 +4,12 @@ Compare HSV quantization between Python and Rust implementations.
 """
 
 import base64
-import requests
 from colorsys import rgb_to_hsv
-from PIL import Image
 from io import BytesIO
+
 import numpy as np
+import requests
+from PIL import Image
 
 # Download image
 url = "https://picsum.photos/id/10/400/300"
@@ -34,7 +35,9 @@ for i in range(min(10, len(valid_pixels))):
     s_q = int(s * 10)
     v_q = int(v * 10)
     key = h_q * 1000 + s_q * 10 + v_q
-    print(f"  Pixel {i}: RGB=({r:.3f}, {g:.3f}, {b:.3f}), HSV=({h:.3f}, {s:.3f}, {v:.3f}), quantized=({h_q}, {s_q}, {v_q}), key={key}")
+    print(
+        f"  Pixel {i}: RGB=({r:.3f}, {g:.3f}, {b:.3f}), HSV=({h:.3f}, {s:.3f}, {v:.3f}), quantized=({h_q}, {s_q}, {v_q}), key={key}"
+    )
 
 # Count all quantized keys
 rgb_pixels = valid_pixels[:, :3] / 255.0
@@ -46,6 +49,7 @@ quantized = (
 )
 
 from collections import Counter
+
 counts = Counter(quantized)
 top5 = counts.most_common(5)
 
@@ -58,7 +62,9 @@ for key, count in top5:
     h_q = int(h * 10)
     s_q = int(s * 10)
     v_q = int(v * 10)
-    print(f"  Key={key:6d}, count={count:6d}, HSV=({h:.3f}, {s:.3f}, {v:.3f}), quantized=({h_q}, {s_q}, {v_q})")
+    print(
+        f"  Key={key:6d}, count={count:6d}, HSV=({h:.3f}, {s:.3f}, {v:.3f}), quantized=({h_q}, {s_q}, {v_q})"
+    )
 
 # Now call Rust and see what it reports
 print("\nCalling Rust endpoint...")
@@ -79,11 +85,14 @@ rust_h_q = int(rust_h * 10)
 rust_s_q = int(rust_s * 10)
 rust_v_q = int(rust_v * 10)
 rust_key = rust_h_q * 1000 + rust_s_q * 10 + rust_v_q
-print(f"Rust HSV: ({rust_h:.3f}, {rust_s:.3f}, {rust_v:.3f}), quantized=({rust_h_q}, {rust_s_q}, {rust_v_q}), key={rust_key}")
+print(
+    f"Rust HSV: ({rust_h:.3f}, {rust_s:.3f}, {rust_v:.3f}), quantized=({rust_h_q}, {rust_s_q}, {rust_v_q}), key={rust_key}"
+)
 
 # Check if this key exists in our counts
 if rust_key in counts:
-    print(f"This key has count {counts[rust_key]} in Python (rank: {sorted(counts.values(), reverse=True).index(counts[rust_key]) + 1})")
+    print(
+        f"This key has count {counts[rust_key]} in Python (rank: {sorted(counts.values(), reverse=True).index(counts[rust_key]) + 1})"
+    )
 else:
     print("This key does NOT exist in Python's quantization!")
-

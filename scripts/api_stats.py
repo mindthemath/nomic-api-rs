@@ -6,9 +6,8 @@ from colorsys import rgb_to_hsv
 
 import litserve as ls
 import numpy as np
-from PIL import ExifTags, Image
-
 from api_utils import decode_request
+from PIL import ExifTags, Image
 
 # Environment configurations
 PORT = int(os.environ.get("PORT", "8000"))

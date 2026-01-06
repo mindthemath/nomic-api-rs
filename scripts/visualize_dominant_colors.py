@@ -9,12 +9,12 @@ import os
 import sys
 from collections import Counter
 from colorsys import rgb_to_hsv
+from io import BytesIO
 from pathlib import Path
 
 import numpy as np
 import requests
 from PIL import Image, ImageDraw, ImageFont
-from io import BytesIO
 
 # Test images - 10 diverse images for comprehensive testing
 TEST_IMAGES = {
@@ -124,24 +124,24 @@ def get_python_dominant_color(image):
 
 def main():
     print("Comparing Python vs Rust dominant colors...\n")
-    
+
     results = {}
-    
+
     for name, url in TEST_IMAGES.items():
         print(f"Processing {name}...")
         image_bytes = download_image(url)
         image = Image.open(BytesIO(image_bytes))
-        
+
         # Get Python's dominant color
         py_dom_rgb = get_python_dominant_color(image)
         py_dom_hex = rgb_to_hex(py_dom_rgb) if py_dom_rgb is not None else None
-        
+
         # Get Rust's dominant color (doesn't matter which averaging method)
         rust_result = call_rust_stats(image_bytes, "arithmetic")
         rust_dom = rust_result["color_data"]["dominant_color"]
         rust_dom_rgb = rust_dom["rgb"]
         rust_dom_hex = rust_dom["hex"]
-        
+
         # Compare Python vs Rust
         if py_dom_rgb is not None:
             diff = np.linalg.norm(np.array(py_dom_rgb) - np.array(rust_dom_rgb))
@@ -155,12 +155,12 @@ def main():
             print(f"  Python: Failed to compute")
             print(f"  Rust:   {rust_dom_hex}")
             match = False
-        
+
         # Also get average colors for display
         rust_avg_arith = rust_result["color_data"]["avg_color"]["rgb"]
         rust_result_geom = call_rust_stats(image_bytes, "geometric")
         rust_avg_geom = rust_result_geom["color_data"]["avg_color"]["rgb"]
-        
+
         results[name] = {
             "image": image,
             "py_dom_rgb": py_dom_rgb,
@@ -172,85 +172,94 @@ def main():
             "match": match,
         }
         print()
-    
+
     # Create visualization
     print("Creating visualization images...")
     output_dir = Path("test_images") / "visualizations"
     output_dir.mkdir(parents=True, exist_ok=True)
-    
+
     for name, data in results.items():
         img = data["image"]
         py_dom_rgb = data["py_dom_rgb"]
         rust_dom_rgb = data["rust_dom_rgb"]
         rust_avg_arith = data["rust_avg_arith"]
         rust_avg_geom = data["rust_avg_geom"]
-        
+
         # Create a composite image showing original + color swatches
         swatch_size = (200, 100)
-        composite = Image.new("RGB", (img.width + swatch_size[0] * 4, img.height + 150), "white")
-        
+        composite = Image.new(
+            "RGB", (img.width + swatch_size[0] * 4, img.height + 150), "white"
+        )
+
         # Paste original image
         composite.paste(img, (0, 0))
-        
+
         # Create and paste color swatches
         y_offset = img.height + 20
-        
+
         # Python vs Rust dominant colors (first two swatches)
         if py_dom_rgb is not None:
             py_dom_swatch = create_color_swatch(py_dom_rgb, swatch_size)
             composite.paste(py_dom_swatch, (0, y_offset))
-        
+
         rust_dom_swatch = create_color_swatch(rust_dom_rgb, swatch_size)
         composite.paste(rust_dom_swatch, (swatch_size[0], y_offset))
-        
+
         # Average colors (swatches 3 and 4)
         avg_arith_swatch = create_color_swatch(rust_avg_arith, swatch_size)
         composite.paste(avg_arith_swatch, (swatch_size[0] * 2, y_offset))
-        
+
         avg_geom_swatch = create_color_swatch(rust_avg_geom, swatch_size)
         composite.paste(avg_geom_swatch, (swatch_size[0] * 3, y_offset))
-        
+
         # Add labels
         draw = ImageDraw.Draw(composite)
         try:
-            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 16)
+            font = ImageFont.truetype(
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 16
+            )
         except:
             font = ImageFont.load_default()
-        
+
         labels = [
             f"Dom (py): {data['py_dom_hex'] or 'N/A'}",
             f"Dom (rs): {data['rust_dom_hex']}",
             f"Avg (arith): {rgb_to_hex(rust_avg_arith)}",
             f"Avg (geom): {rgb_to_hex(rust_avg_geom)}",
         ]
-        
+
         for i, label in enumerate(labels):
             x = i * swatch_size[0] + 10
             y = y_offset + swatch_size[1] + 5
             draw.text((x, y), label, fill="black", font=font)
-        
+
         output_path = output_dir / f"{name}_analysis.png"
         composite.save(output_path)
         print(f"  Saved: {output_path}")
-    
+
     print(f"\n✓ Visualizations saved to: {output_dir}")
     print("\nSummary:")
-    matches = [data["match"] for data in results.values() if data["py_dom_rgb"] is not None]
+    matches = [
+        data["match"] for data in results.values() if data["py_dom_rgb"] is not None
+    ]
     all_match = all(matches) if matches else False
-    
+
     for name, data in results.items():
         if data["py_dom_rgb"] is not None:
             status = "✓" if data["match"] else "✗"
-            print(f"{status} {name}: Python={data['py_dom_hex']}, Rust={data['rust_dom_hex']}")
-    
+            print(
+                f"{status} {name}: Python={data['py_dom_hex']}, Rust={data['rust_dom_hex']}"
+            )
+
     if all_match:
         print("\n✓ All dominant colors match between Python and Rust!")
     else:
-        print("\n⚠️  Some dominant colors differ (expected due to clustering algorithm differences)")
-    
+        print(
+            "\n⚠️  Some dominant colors differ (expected due to clustering algorithm differences)"
+        )
+
     return 0 if all_match else 0  # Don't fail - differences are acceptable
 
 
 if __name__ == "__main__":
     sys.exit(main())
-
