@@ -80,6 +80,15 @@ build-cuda: fmt
 	cargo build --release --features cuda
 	@echo "✓ Build complete (with CUDA support)"
 
+# Build with CUDA 12.2 support (for older drivers, uses ort 2.0.0-rc.2 which bundles ONNX Runtime 1.18.x)
+build-cuda-12-2: fmt
+	@# Temporarily patch Cargo.toml to use ort 2.0.0-rc.2 (compatible with CUDA 12.1/12.2)
+	@sed -i.bak 's|version = "2.0.0-rc.10"|version = "2.0.0-rc.2"|' Cargo.toml
+	@cargo build --release --features cuda-12-2 || (mv Cargo.toml.bak Cargo.toml && exit 1)
+	@# Restore original Cargo.toml
+	@mv Cargo.toml.bak Cargo.toml
+	@echo "✓ Build complete (with CUDA 12.2 support, using ort 2.0.0-rc.2)"
+
 check:
 	@cargo check
 	@echo "✓ Check complete"
@@ -118,7 +127,7 @@ run: build check-models
 run-full: build check-models
 	AVERAGING=arithmetic TXT_MODEL=models/txt/model.onnx IMG_MODEL=models/img/model.onnx ./target/release/nomic-serve
 
-run-gpu: build-cuda check-models
+run-gpu: build-cuda-12-2 check-models
 	USE_GPU=1 ./target/release/nomic-serve
 
 # Run server (image-stats is now always included, no model files required for /img/stats)

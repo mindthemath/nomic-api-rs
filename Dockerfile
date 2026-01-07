@@ -5,15 +5,20 @@
 # ============================================================================
 # Stage 1: Build
 # ============================================================================
-FROM rust:1.92.0-slim AS builder
+# Use Ubuntu 22.04 base to match runtime GLIBC version
+FROM ubuntu:22.04 AS builder
 
-# Install build dependencies
+# Install Rust and build dependencies
+# Use rustup to install Rust (matches rust:1.92.0 version)
 RUN apt-get update && apt-get install -y \
+    curl \
     pkg-config \
     libssl-dev \
     ca-certificates \
     build-essential \
+    && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.92.0 \
     && rm -rf /var/lib/apt/lists/*
+ENV PATH="/root/.cargo/bin:${PATH}"
 
 WORKDIR /build
 

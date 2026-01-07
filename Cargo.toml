@@ -5,7 +5,8 @@ edition = "2021"
 
 [features]
 default = []
-cuda = ["ort/cuda"]  # Enable CUDA support (Linux only, requires NVIDIA drivers)
+cuda = ["ort/cuda"]  # Enable CUDA support (Linux only, requires NVIDIA drivers, CUDA 12.3+)
+cuda-12-2 = ["ort/cuda"]  # Enable CUDA support for CUDA 12.1/12.2 (uses older ort version via patch)
 
 [dependencies]
 anyhow        = "1"
@@ -15,6 +16,7 @@ hex           = "0.4"
 image         = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
 kamadak-exif  = "0.5"
 ndarray       = "0.16"
+# ort version selection: use cuda-12-2 feature for CUDA 12.1/12.2 compatibility
 ort           = { version = "2.0.0-rc.10", default-features = false, features = ["ndarray", "half", "download-binaries"] }
 reqwest       = { version = "0.12", default-features = false, features = ["rustls-tls", "trust-dns"] }
 serde         = { version = "1", features = ["derive"] }
@@ -25,3 +27,4 @@ tower-http    = { version = "0.5", features = ["trace", "cors"] }
 tracing       = "0.1"
 tracing-subscriber = "0.3"
 utoipa        = { version = "5", features = ["axum_extras"] }
+

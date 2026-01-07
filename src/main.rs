@@ -39,23 +39,23 @@ use ort::{
     Error as OrtError,
 };
 
-#[cfg(feature = "cuda")]
+#[cfg(any(feature = "cuda", feature = "cuda-12-2"))]
 use ort::execution_providers::CUDAExecutionProvider;
 
 // Check if CUDA feature is compiled in
-#[cfg(feature = "cuda")]
+#[cfg(any(feature = "cuda", feature = "cuda-12-2"))]
 fn check_cuda_feature_enabled() -> bool {
     true
 }
 
-#[cfg(not(feature = "cuda"))]
+#[cfg(not(any(feature = "cuda", feature = "cuda-12-2")))]
 fn check_cuda_feature_enabled() -> bool {
     false
 }
 
 // Check if CUDA libraries are actually available at runtime
 // Returns (available, library_path_if_found)
-#[cfg(feature = "cuda")]
+#[cfg(any(feature = "cuda", feature = "cuda-12-2"))]
 fn check_cuda_libraries_available() -> (bool, Option<std::path::PathBuf>) {
     use std::fs;
     use std::path::PathBuf;
@@ -135,7 +135,7 @@ fn check_cuda_libraries_available() -> (bool, Option<std::path::PathBuf>) {
     (false, None)
 }
 
-#[cfg(not(feature = "cuda"))]
+#[cfg(not(any(feature = "cuda", feature = "cuda-12-2")))]
 fn check_cuda_libraries_available() -> (bool, Option<std::path::PathBuf>) {
     (false, None)
 }
@@ -328,7 +328,7 @@ impl AppState {
 
             // Try CUDA if requested, fall back to CPU if it fails
             let (session, text_gpu_used) = if actual_use_gpu {
-                #[cfg(feature = "cuda")]
+                #[cfg(any(feature = "cuda", feature = "cuda-12-2"))]
                 {
                     info!("Attempting to create text model session with CUDA...");
                     let builder = SessionBuilder::new()
@@ -434,7 +434,7 @@ impl AppState {
                         }
                     }
                 }
-                #[cfg(not(feature = "cuda"))]
+                #[cfg(not(any(feature = "cuda", feature = "cuda-12-2")))]
                 {
                     let cpu_builder = SessionBuilder::new()
                         .map_err(|e| anyhow::anyhow!("Failed to create session builder: {}", e))?
@@ -478,7 +478,7 @@ impl AppState {
 
             // Try CUDA if requested, fall back to CPU if it fails
             let (session, vision_gpu_used) = if actual_use_gpu {
-                #[cfg(feature = "cuda")]
+                #[cfg(any(feature = "cuda", feature = "cuda-12-2"))]
                 {
                     info!("Attempting to create vision model session with CUDA...");
                     let builder = SessionBuilder::new()
@@ -584,7 +584,7 @@ impl AppState {
                         }
                     }
                 }
-                #[cfg(not(feature = "cuda"))]
+                #[cfg(not(any(feature = "cuda", feature = "cuda-12-2")))]
                 {
                     let cpu_builder = SessionBuilder::new()
                         .map_err(|e| anyhow::anyhow!("Failed to create session builder: {}", e))?
@@ -1669,7 +1669,7 @@ async fn fetch_image_url(url: &str) -> Result<Vec<u8>, Error> {
 
 /// Verify CUDA session actually works by running a test inference and checking GPU usage
 /// This catches driver compatibility issues that only appear at runtime
-#[cfg(feature = "cuda")]
+#[cfg(any(feature = "cuda", feature = "cuda-12-2"))]
 fn verify_cuda_session(session: &mut Session) -> Result<(), String> {
     use ort::session::{SessionInputValue, SessionInputs};
     use ort::value::Value;
@@ -1742,7 +1742,7 @@ fn verify_cuda_session(session: &mut Session) -> Result<(), String> {
 }
 
 /// Get current GPU memory usage in MiB
-#[cfg(feature = "cuda")]
+#[cfg(any(feature = "cuda", feature = "cuda-12-2"))]
 fn get_gpu_memory_used() -> Option<u64> {
     let output = Command::new("nvidia-smi")
         .args(&["--query-gpu=memory.used", "--format=csv,noheader,nounits"])
@@ -1753,18 +1753,18 @@ fn get_gpu_memory_used() -> Option<u64> {
     stdout.trim().parse::<u64>().ok()
 }
 
-#[cfg(not(feature = "cuda"))]
+#[cfg(not(any(feature = "cuda", feature = "cuda-12-2")))]
 fn verify_cuda_session(_session: &mut Session) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(not(feature = "cuda"))]
+#[cfg(not(any(feature = "cuda", feature = "cuda-12-2")))]
 fn get_gpu_memory_used() -> Option<u64> {
     None
 }
 
 /// Verify CUDA vision session actually works by running a test inference and checking GPU usage
-#[cfg(feature = "cuda")]
+#[cfg(any(feature = "cuda", feature = "cuda-12-2"))]
 fn verify_cuda_vision_session(session: &mut Session) -> Result<(), String> {
     use ort::session::{SessionInputValue, SessionInputs};
     use ort::value::Value;
@@ -1820,7 +1820,7 @@ fn verify_cuda_vision_session(session: &mut Session) -> Result<(), String> {
     }
 }
 
-#[cfg(not(feature = "cuda"))]
+#[cfg(not(any(feature = "cuda", feature = "cuda-12-2")))]
 fn verify_cuda_vision_session(_session: &mut Session) -> Result<(), String> {
     Ok(())
 }
