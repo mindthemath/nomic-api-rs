@@ -134,7 +134,7 @@ struct TextState {
 }
 
 /// Vision embedding state (ONNX session only, no tokenizer)
-struct VisionState {
+pub struct VisionState {
     session: Mutex<Session>,
 }
 
@@ -982,15 +982,20 @@ async fn img_batch_handler(
         ));
     }
 
-    let mut embeddings = Vec::with_capacity(req.contents.len());
-
+    // Decode all images first
+    let mut images = Vec::with_capacity(req.contents.len());
     for content in &req.contents {
-        let image = decode_image(content).await?;
-        let mut emb = embed_image(vision_state, &image)?;
+        images.push(decode_image(content).await?);
+    }
+
+    // Batch inference (more efficient than sequential)
+    let mut embeddings = embed_image_batch(vision_state, &images)?;
+
+    // Truncate to requested dimension
+    for emb in &mut embeddings {
         if req.dim < emb.len() {
             emb.truncate(req.dim);
         }
-        embeddings.push(emb);
     }
 
     Ok(Json(ImageBatchResponse {
@@ -1344,7 +1349,7 @@ fn embed_text(state: &TextState, text: &str) -> Result<(Vec<f32>, usize), Error>
 // ============================================================================
 
 /// Preprocess image for CLIP-style model
-fn preprocess_image(image: &DynamicImage) -> Vec<f32> {
+pub fn preprocess_image(image: &DynamicImage) -> Vec<f32> {
     // Convert to RGB
     let rgb = image.to_rgb8();
 
@@ -1395,7 +1400,7 @@ fn preprocess_image(image: &DynamicImage) -> Vec<f32> {
 }
 
 /// L2 normalize a vector
-fn l2_normalize(vec: &mut Vec<f32>) {
+pub fn l2_normalize(vec: &mut Vec<f32>) {
     let norm: f32 = vec.iter().map(|x| x * x).sum::<f32>().sqrt();
     if norm > 1e-9 {
         for val in vec.iter_mut() {
@@ -1405,7 +1410,7 @@ fn l2_normalize(vec: &mut Vec<f32>) {
 }
 
 /// Embed single image, returns 768-dim L2-normalized embedding
-fn embed_image(state: &VisionState, image: &DynamicImage) -> Result<Vec<f32>, Error> {
+pub fn embed_image(state: &VisionState, image: &DynamicImage) -> Result<Vec<f32>, Error> {
     let preprocess_start = Instant::now();
     let tensor = preprocess_image(image);
     let preprocess_time = preprocess_start.elapsed();
@@ -1454,4 +1459,98 @@ fn embed_image(state: &VisionState, image: &DynamicImage) -> Result<Vec<f32>, Er
     l2_normalize(&mut embedding);
 
     Ok(embedding)
+}
+
+/// Embed multiple images in a batch, returns list of 768-dim L2-normalized embeddings
+/// 
+/// Note: FP32 models batch perfectly (no interference). Quantized models may show
+/// ~1% difference (cosine similarity ~0.99) due to quantization artifacts.
+pub fn embed_image_batch(
+    state: &VisionState,
+    images: &[DynamicImage],
+) -> Result<Vec<Vec<f32>>, Error> {
+    if images.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let preprocess_start = Instant::now();
+    let mut tensors = Vec::with_capacity(images.len());
+    for image in images {
+        tensors.push(preprocess_image(image));
+    }
+    let preprocess_time = preprocess_start.elapsed();
+
+    // Stack tensors: [N, 3, 224, 224]
+    let batch_size = images.len();
+    let mut batch_tensor = Vec::with_capacity(batch_size * 3 * IMAGE_SIZE * IMAGE_SIZE);
+    for tensor in tensors {
+        batch_tensor.extend_from_slice(&tensor);
+    }
+
+    let input_shape = vec![
+        batch_size as i64,
+        3,
+        IMAGE_SIZE as i64,
+        IMAGE_SIZE as i64,
+    ];
+    let pixel_values: Value = Value::from_array((input_shape, batch_tensor))?.into();
+
+    let inputs_vec = vec![(
+        "pixel_values".to_string(),
+        SessionInputValue::from(pixel_values),
+    )];
+
+    let inference_start = Instant::now();
+    let mut session_guard = state.session.lock().unwrap();
+    let outputs = session_guard.run(SessionInputs::from(inputs_vec))?;
+    let inference_time = inference_start.elapsed();
+
+    info!(
+        "Vision batch inference timing - preprocess: {:.2}ms, ONNX: {:.2}ms, batch_size: {}",
+        preprocess_time.as_secs_f64() * 1000.0,
+        inference_time.as_secs_f64() * 1000.0,
+        batch_size
+    );
+
+    let (output_shape, raw_output) = outputs[0].try_extract_tensor::<f32>()?.to_owned();
+    let output_vec = raw_output.to_vec();
+    let shape_dims: Vec<usize> = output_shape.iter().map(|&d| d as usize).collect();
+
+    // Extract CLS token for each image in batch
+    let mut embeddings = Vec::with_capacity(batch_size);
+    match shape_dims.as_slice() {
+        [n, 768] if *n == batch_size => {
+            // Output is [N, 768] - already extracted CLS tokens
+            for i in 0..batch_size {
+                let start = i * 768;
+                let end = start + 768;
+                embeddings.push(output_vec[start..end].to_vec());
+            }
+        }
+        [n, _num_tokens, 768] if *n == batch_size => {
+            // Output is [N, num_tokens, 768] - extract CLS token (first token) for each
+            let tokens_per_image = shape_dims[1];
+            for i in 0..batch_size {
+                let start = i * tokens_per_image * 768;
+                let end = start + 768;
+                embeddings.push(output_vec[start..end].to_vec());
+            }
+        }
+        _ => {
+            return Err(Error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!(
+                    "Unexpected vision model output shape: {:?} (expected batch_size={})",
+                    shape_dims, batch_size
+                ),
+            ));
+        }
+    }
+
+    // L2 normalize each embedding
+    for embedding in &mut embeddings {
+        l2_normalize(embedding);
+    }
+
+    Ok(embeddings)
 }

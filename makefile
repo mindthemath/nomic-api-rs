@@ -8,7 +8,8 @@ default: run
         docker-build docker-build-cpu docker-push docker-push-cpu \
         model-txt model-txt-all model-img model-img-all check-txt check-img check-models \
         test-img test-img-batch test-multimodal test-img-stats run-stats \
-        test-vision-batch benchmark-vision-batch benchmark-vision-batch-gpu benchmark-throughput
+        test-vision-batch test-text-batch-fp32 test-text-batch-transformers \
+        benchmark-vision-batch benchmark-vision-batch-gpu benchmark-throughput
 
 # ==============================================================================
 # Model Files
@@ -203,6 +204,16 @@ test-vision-batch:
 	@echo "Testing vision model batching for cross-sample interference..."
 	@cd scripts && python3 test_vision_batch_interference.py
 
+# Test text model FP32 vs quantized batching
+test-text-batch-fp32:
+	@echo "Testing text model batching: quantized vs FP32..."
+	@cd scripts && python3 test_text_batch_fp32.py
+
+# Test text model with PyTorch/transformers
+test-text-batch-transformers:
+	@echo "Testing text model batching with PyTorch/transformers..."
+	@cd scripts && python3 test_text_batch_transformers.py
+
 # Benchmark vision model batching performance
 benchmark-vision-batch:
 	@echo "Benchmarking vision model with different batch sizes..."
@@ -218,6 +229,12 @@ benchmark-throughput:
 	@echo "Benchmarking API server throughput..."
 	@echo "Make sure server is running: make run"
 	@cd scripts && python3 benchmark_throughput.py
+
+# Test Rust vision batching implementation via API
+test-rust-batch:
+	@echo "Testing Rust vision batching implementation..."
+	@echo "Make sure server is running: make run"
+	@cd scripts && python3 test_rust_batching.py
 
 # ==============================================================================
 # Test - Multimodal

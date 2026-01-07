@@ -265,27 +265,37 @@ curl -X POST localhost:8080/embed \
 
 ---
 
-## Why Sequential Processing (No Batching)
+## Why Sequential Processing (No Batching for Quantized Text Model)
 
-This server processes each text **individually** rather than batching multiple texts into a single inference call. This is a deliberate design choice required by the nomic-embed-text-v1.5 ONNX model.
+This server processes each text **individually** rather than batching multiple texts into a single inference call. This is a deliberate design choice required by the **quantized** nomic-embed-text-v1.5 ONNX model.
 
-### The Problem: Cross-Sample Interference
+### The Problem: Cross-Sample Interference in Quantized Model
 
-We discovered that this model exhibits **cross-sample interference** during batched inference: when multiple texts are processed together, each text's embedding is affected by the other texts in the batch.
+We discovered that the **quantized** text model exhibits severe cross-sample interference during batched inference: when multiple texts are processed together, each text's embedding is affected by the other texts in the batch.
 
-**Empirical evidence** (see `debug_batch.py`):
+**Empirical evidence** (see `test_batch_interference.py` and `test_text_batch_fp32.py`):
 
-| Batch composition | Max embedding difference from single inference |
-|-------------------|-----------------------------------------------|
-| Same text × 2 (no padding) | **0.000000** ✓ identical |
-| Text A + Text B (same token count, no padding) | **0.539796** ✗ |
-| Text A + Text C (different token count, with padding) | **0.570585** ✗ |
-| Text A + Text B + Text C | **0.596318** ✗ |
+| Model | Batch composition | Max embedding difference |
+|-------|-------------------|--------------------------|
+| **Quantized** | Same text × 2 (no padding) | **0.000000** ✓ identical |
+| **Quantized** | Text A + Text B (same token count, no padding) | **0.539796** ✗ severe |
+| **Quantized** | Text A + Text C (different token count, with padding) | **0.570585** ✗ severe |
+| **FP32** | Any batch composition | **0.000000** ✓ perfect |
+| **PyTorch/Transformers** | Any batch composition | **0.000000** ✓ perfect |
 
-Key findings:
-1. **Padding is NOT the cause** — differences occur even when all texts have identical token counts
-2. **The same text batched with itself produces identical results** — proving it's cross-sample, not batch-size related
-3. **Different texts always interfere** — any batch containing different texts produces different embeddings
+**Key findings:**
+1. **Quantization is the cause** — FP32 model batches perfectly (0.000000 diff)
+2. **Text model is more sensitive** — Quantized text shows ~0.5 diff vs vision's ~0.02 diff
+3. **PyTorch/Transformers batches perfectly** — Confirms it's an ONNX quantization issue, not model architecture
+
+### Why Quantization Causes Interference
+
+The quantized (INT8) text model uses dynamic quantization that computes quantization parameters across the batch:
+- **Per-batch quantization scales**: Parameters computed from batch statistics
+- **Asymmetric quantization**: Zero-point calculations vary with batch composition
+- **Dequantization precision**: Rounding errors accumulate differently in batches
+
+The text model's architecture (BERT-based with mean pooling) appears more sensitive to these quantization artifacts than the vision model (ViT with CLS token extraction).
 
 ### Model Architecture
 
@@ -296,13 +306,7 @@ According to the [Nomic Embed Technical Report](https://static.nomic.ai/reports/
 - **Training**: Multi-stage contrastive learning with 235M text pairs
 - **Features**: Matryoshka Representation Learning for variable-dimension embeddings
 
-The cross-sample interference is likely caused by one of:
-
-1. **Quantization artifacts**: The ONNX quantized model may compute dynamic quantization parameters across the batch, causing batch-dependent results
-2. **ONNX graph optimizations**: Certain fused operations may behave differently for different batch compositions
-3. **Normalization layers**: Some normalization computations may inadvertently span the batch dimension
-
-This behavior was verified in Python with `onnxruntime` directly (not just our Rust code), confirming it's a model/runtime characteristic, not an implementation bug.
+**Note**: The model architecture itself supports batching (proven by FP32 and PyTorch implementations). The interference is specific to ONNX quantized models.
 
 ### Why This Matters
 
@@ -318,12 +322,21 @@ This could cause:
 - Non-reproducible experiments
 - Subtle bugs that are hard to diagnose
 
-### Sequential Processing is Correct
+### Sequential Processing is Correct (for Quantized Model)
 
-By processing each text individually (batch_size=1), we guarantee:
+By processing each text individually (batch_size=1) with the quantized model, we guarantee:
 - **Deterministic results**: Same text → same embedding, always
 - **No cross-sample interference**: Each text processed in isolation
 - **Correctness over speed**: Throughput is lower, but results are reliable
+
+### Alternative: Use FP32 Model for Batching
+
+If you need batching for text embeddings:
+- **Use FP32 model** (`model.onnx` instead of `model_quantized.onnx`)
+- **FP32 batches perfectly** (0.000000 difference, cosine similarity = 1.0)
+- **Trade-off**: Larger model size (~375MB vs ~131MB) but enables batching
+
+**Current implementation**: Uses quantized model by default, so sequential processing is required.
 
 ---
 

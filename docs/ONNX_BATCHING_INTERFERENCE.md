@@ -2,12 +2,19 @@
 
 ## Summary
 
-When batching different images in ONNX Runtime, we observe small but measurable cross-sample interference:
-- **Cosine similarity**: ~99% (vs 100% if identical)
-- **Max absolute difference**: ~0.016-0.024 per dimension
-- **Impact**: Small but measurable - may affect similarity search rankings slightly
+Batching behavior differs significantly between models and quantization levels:
 
-**Important**: The PyTorch/transformers implementation shows **NO interference** (cosine similarity = 1.0), confirming this is an ONNX-specific issue, not a model architecture problem.
+### Vision Model
+- **ONNX Quantized**: ~99% cosine similarity (~0.02 max diff) - **Acceptable**
+- **ONNX FP32**: 100% cosine similarity (0.000000 diff) - **Perfect**
+- **PyTorch/Transformers**: 100% cosine similarity (0.000000 diff) - **Perfect**
+
+### Text Model
+- **ONNX Quantized**: ~50-60% cosine similarity (~0.5 max diff) - **Unacceptable**
+- **ONNX FP32**: 100% cosine similarity (0.000000 diff) - **Perfect**
+- **PyTorch/Transformers**: 100% cosine similarity (0.000000 diff) - **Perfect**
+
+**Key Finding**: Quantization causes **severe interference in text model** (~0.5 diff) but only **minor interference in vision model** (~0.02 diff). FP32 models batch perfectly for both.
 
 ## What Causes ONNX Interference?
 
@@ -66,23 +73,49 @@ The PyTorch/transformers implementation shows **zero interference** (cosine simi
 
 ## Quantized vs FP32 Comparison
 
-Testing both models shows:
+### Vision Model
 
 - **Quantized (INT8)**: Max diff ~0.018-0.024, cosine ~98-99%
-- **FP32 (Full precision)**: Max diff ~0.016-0.022, cosine ~99%
+- **FP32 (Full precision)**: Max diff 0.000000, cosine 100% (perfect)
 
-**Conclusion**: Quantization slightly increases interference but is not the primary cause. The interference exists even in FP32 models, confirming it's primarily due to ONNX Runtime optimizations.
+**Conclusion**: Quantization causes minor interference in vision model, but FP32 batches perfectly.
+
+### Text Model
+
+- **Quantized (INT8)**: Max diff ~0.5-0.6, cosine ~50-60% (severe interference)
+- **FP32 (Full precision)**: Max diff 0.000000, cosine 100% (perfect)
+
+**Conclusion**: **Quantization causes severe interference in text model**. FP32 batches perfectly, confirming quantization is the primary cause for text model interference.
+
+### Key Insight
+
+The text model is **much more sensitive to quantization** than the vision model:
+- Text quantized: ~0.5 max diff (unusable for batching)
+- Vision quantized: ~0.02 max diff (acceptable for most use cases)
+- Both FP32: Perfect batching (0.000000 diff)
 
 ## Is This Acceptable?
 
-### For Your Use Case (Relative Rankings)
+### Vision Model (Quantized)
 
-**Yes, likely acceptable** because:
+**Yes, acceptable** for most use cases:
 
 1. **99% cosine similarity**: Embeddings remain very similar
 2. **Relative rankings preserved**: Top-k results likely remain stable
-3. **Vector search is approximate**: Most vector databases (Pinecone, Weaviate, Qdrant) use approximate search anyway
-4. **Small impact**: The interference is much smaller than the difference between different images (cosine ~0.74)
+3. **Vector search is approximate**: Most vector databases use approximate search anyway
+4. **Small impact**: The interference (~0.02) is much smaller than the difference between different images (cosine ~0.74)
+
+**Recommendation**: Use quantized vision model with batching if 99% similarity is acceptable. Use FP32 for perfect batching.
+
+### Text Model (Quantized)
+
+**No, not acceptable** for batching:
+
+1. **~50-60% cosine similarity**: Embeddings are significantly different
+2. **Rankings will change**: Top-k results will be unreliable
+3. **Unusable for production**: The interference is too severe
+
+**Recommendation**: **DO NOT batch text model with quantized ONNX**. Use FP32 model for batching, or process sequentially (batch_size=1).
 
 ### When It Might Matter
 
@@ -99,10 +132,24 @@ Testing both models shows:
 
 ## Recommendations
 
-1. **For production**: Batching is acceptable if 99% similarity is sufficient for your use case
-2. **For exact matching**: Use sequential processing (current implementation)
-3. **For maximum throughput**: Implement batching with documentation about the ~1% difference
-4. **For research/reproducibility**: Use sequential processing or PyTorch implementation
+### Vision Model
+
+1. **Quantized model**: Batching is acceptable if 99% similarity is sufficient (~0.02 diff)
+2. **FP32 model**: Perfect batching (0.000000 diff) - recommended for production
+3. **PyTorch/Transformers**: Perfect batching - use if ONNX not required
+
+### Text Model
+
+1. **Quantized model**: **DO NOT batch** - interference too severe (~0.5 diff)
+2. **FP32 model**: Perfect batching (0.000000 diff) - **use for batching**
+3. **PyTorch/Transformers**: Perfect batching - use if ONNX not required
+4. **Current implementation**: Sequential processing (batch_size=1) is correct for quantized model
+
+### General
+
+- **For exact matching**: Use FP32 models or sequential processing
+- **For maximum throughput**: Use FP32 models with batching
+- **For research/reproducibility**: Use FP32 models or PyTorch/Transformers
 
 ## Technical Details
 
@@ -115,11 +162,24 @@ Testing both models shows:
 
 ### Observed Metrics
 
+#### Vision Model (Quantized)
 - **Max absolute difference**: 0.016-0.024 (one dimension differs by this amount)
 - **Mean absolute difference**: 0.003-0.005 (average across all dimensions)
 - **Cosine similarity**: 0.98-0.99 (99% similar)
 - **L2 distance**: 0.13-0.19 (Euclidean distance between embeddings)
 - **Dimensions affected**: 82-87% of dimensions differ by >0.001
+
+#### Vision Model (FP32)
+- **Max absolute difference**: 0.000000 (perfect)
+- **Cosine similarity**: 1.000000 (100% identical)
+
+#### Text Model (Quantized)
+- **Max absolute difference**: 0.5-0.6 (severe interference)
+- **Cosine similarity**: ~0.5-0.6 (50-60% similar - unusable)
+
+#### Text Model (FP32)
+- **Max absolute difference**: 0.000000 (perfect)
+- **Cosine similarity**: 1.000000 (100% identical)
 
 ### Comparison to Baseline
 

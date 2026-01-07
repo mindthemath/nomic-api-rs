@@ -5,12 +5,14 @@ This document provides recommendations for improving requests-per-second (RPS) f
 ## Current Architecture Constraints
 
 ### Text Model
-- **Cannot batch**: Cross-sample interference proven (see `test_batch_interference.py`)
-- **Sequential processing required**: Each text must be processed individually
+- **Cannot batch (quantized)**: Severe cross-sample interference (~0.5 diff) proven (see `test_batch_interference.py`)
+- **CAN batch (FP32)**: Perfect batching (0.000000 diff) - see `test_text_batch_fp32.py`
+- **Sequential processing required for quantized**: Each text must be processed individually
 - **137M parameters**: Relatively small model, may be memory-bound on GPU
 
 ### Vision Model
-- **Batching possible**: Should work (needs verification via `test_vision_batch_interference.py`)
+- **Batching works (quantized)**: Minor interference (~0.02 diff, 99% similarity) - acceptable
+- **Batching perfect (FP32)**: No interference (0.000000 diff, 100% similarity) - verified
 - **92M parameters**: Small model, GPU benefits may be limited
 - **Fixed input size**: All images preprocessed to 224×224, no padding needed
 
@@ -97,19 +99,18 @@ done
 - Each instance loads models into memory (8 instances × 0.5GB = 4GB RAM)
 - More complex deployment
 
-### 2. Vision Model Batching (If Verified Safe)
+### 2. Vision Model Batching ✅ (Implemented)
 
-**If `test_vision_batch_interference.py` shows no interference**, implement batched inference for `/img/batch`:
+**Verified safe**: `test_vision_batch_interference.py` shows quantized model has minor interference (~0.02 diff, 99% similarity), FP32 is perfect.
 
 **Expected improvement**: 2-3x throughput for vision endpoints (batch_size=8)
 
-**Implementation**:
-- Modify `embed_image` to accept batch of images
-- Stack preprocessed tensors: `[N, 3, 224, 224]`
-- Extract CLS tokens per sample: `output[batch_idx, 0, :]`
-- Process entire batch in single ONNX call
+**Implementation**: ✅ Already implemented in `/img/batch` endpoint
+- Batches multiple images into single ONNX call
+- Extracts CLS tokens per sample: `output[batch_idx, 0, :]`
+- Handles both quantized (99% similarity) and FP32 (perfect) models
 
-**Note**: Text model cannot use this approach (cross-sample interference).
+**Note**: Text model can batch with FP32 model (perfect), but quantized model shows severe interference (~0.5 diff).
 
 ### 3. Async Request Queuing
 
@@ -237,7 +238,8 @@ python scripts/benchmark_throughput.py --concurrent 10 --requests 100
 | Strategy | Implementation Effort | Expected Gain | Best For |
 |----------|----------------------|---------------|----------|
 | Horizontal scaling | Low | 8-16x | High throughput |
-| Vision batching | Medium | 2-3x | Vision endpoints |
+| Vision batching | ✅ Done | 2-3x | Vision endpoints |
+| Text batching (FP32) | Medium | 2-3x | Text endpoints (requires FP32 model) |
 | Preprocessing optimization | Medium | 10-20% | All endpoints |
 | Caching | Medium | 10-100x* | Repeated queries |
 | GPU | High | 0-2x | Large batches only |
@@ -256,8 +258,13 @@ python scripts/benchmark_throughput.py --concurrent 10 --requests 100
 - Overhead dominates for small batches
 
 **Next steps**:
-1. Run `test_vision_batch_interference.py` to verify vision batching safety
-2. Run `benchmark_vision_batching.py` to measure batching performance
+1. ✅ Vision batching implemented and verified
+2. Consider text batching with FP32 model (if model size acceptable)
 3. Set up nginx + multiple instances for horizontal scaling
 4. Consider caching for repeated queries
+
+**Model Selection Guide**:
+- **Vision**: Quantized model batches acceptably (99% similarity), FP32 perfect
+- **Text**: Quantized model cannot batch (use sequential), FP32 batches perfectly
+- **Recommendation**: Use FP32 for text if batching needed, quantized for vision is acceptable
 
