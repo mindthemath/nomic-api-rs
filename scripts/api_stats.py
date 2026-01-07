@@ -14,7 +14,10 @@ PORT = int(os.environ.get("PORT", "8000"))
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO")
 NUM_API_SERVERS = int(os.environ.get("NUM_API_SERVERS", "1"))
 WORKERS_PER_DEVICE = int(os.environ.get("WORKERS_PER_DEVICE", "1"))
-AVERAGING_METHOD = os.environ.get("AVERAGING_METHOD", "geometric").lower()
+# Support both AVERAGING (Rust-compatible) and AVERAGING_METHOD (backward compatibility)
+AVERAGING_METHOD = (
+    os.environ.get("AVERAGING") or os.environ.get("AVERAGING_METHOD", "geometric")
+).lower()
 THUMBNAIL_SIZE = int(os.environ.get("THUMBNAIL_SIZE", "512"))
 
 logging.basicConfig(
