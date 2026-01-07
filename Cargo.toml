@@ -5,7 +5,6 @@ edition = "2021"
 
 [features]
 default = []
-cuda = ["ort/cuda"]  # Enable CUDA support (Linux only, requires NVIDIA drivers)
 
 [dependencies]
 anyhow        = "1"

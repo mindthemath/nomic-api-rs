@@ -5,7 +5,7 @@
 default: run
 
 .PHONY: model fmt build clean run health docs openapi test test-list test-dim models-all test-models \
-        docker-build docker-build-cpu docker-build-gpu docker-push docker-push-cpu docker-push-gpu \
+        docker-build docker-build-cpu docker-push docker-push-cpu \
         model-txt model-txt-all model-img model-img-all check-txt check-img check-models \
         test-img test-img-batch test-multimodal test-img-stats run-stats
 
@@ -73,12 +73,7 @@ target/release/nomic-serve: src/main.rs Cargo.toml static/swagger-ui/index.html
 	cargo build --release
 
 build: fmt target/release/nomic-serve
-	@echo "✓ Build complete (CPU only)"
-
-# Build with CUDA support (Linux only, requires NVIDIA drivers)
-build-cuda: fmt
-	cargo build --release --features cuda
-	@echo "✓ Build complete (with CUDA support)"
+	@echo "✓ Build complete"
 
 check:
 	@cargo check
@@ -117,9 +112,6 @@ run: build check-models
 
 run-full: build check-models
 	AVERAGING=arithmetic TXT_MODEL=models/txt/model.onnx IMG_MODEL=models/img/model.onnx ./target/release/nomic-serve
-
-run-gpu: build-cuda check-models
-	USE_GPU=1 ./target/release/nomic-serve
 
 # Run server (image-stats is now always included, no model files required for /img/stats)
 run-stats: build
@@ -229,14 +221,8 @@ test-multimodal:
 # Compare all model variants against baseline (model.onnx, fp32)
 # Requires: models-all, build, and Python requests library
 test-models: build model-txt-all
-	@echo "Starting model variant comparison (CPU)..."
-	@USE_GPU=0 bash scripts/run_model_comparison.sh
-
-# Compare all model variants on GPU
-# Requires: models-all, build, CUDA drivers, and Python requests library
-test-models-gpu: build model-txt-all
-	@echo "Starting model variant comparison (GPU)..."
-	@USE_GPU=1 bash scripts/run_model_comparison.sh
+	@echo "Starting model variant comparison..."
+	@bash scripts/run_model_comparison.sh
 
 # ==============================================================================
 # Docker
@@ -245,8 +231,8 @@ test-models-gpu: build model-txt-all
 DOCKER_IMAGE = mindthemath/nomic-embed-v1.5-rs
 DOCKER_TAG ?= latest
 
-# Build both CPU and GPU images
-docker-build: docker-build-cpu docker-build-gpu
+# Build CPU image
+docker-build: docker-build-cpu
 
 # Build CPU-only image (requires both models, defaults to quantized)
 docker-build-cpu: model-txt model-img
@@ -267,36 +253,11 @@ docker-build-cpu-full: model-txt model-img
 docker-run-cpu: docker-build-cpu
 	docker run -p 8080:8080 --dns 1.1.1.1 --dns 1.0.0.1 $(DOCKER_IMAGE):$(DOCKER_TAG)-cpu
 
-# Build GPU (CUDA) image (requires both models, defaults to quantized)
-docker-build-gpu: model-txt model-img
-	@echo "Building GPU Docker image (quantized models)..."
-	docker build --target runtime-gpu \
-		--build-arg TXT_MODEL_FILE=model_quantized.onnx \
-		--build-arg IMG_MODEL_FILE=model_quantized.onnx \
-		-t $(DOCKER_IMAGE):$(DOCKER_TAG)-gpu -t $(DOCKER_IMAGE):latest-gpu .
-
-# Build GPU image with full precision models
-docker-build-gpu-full: model-txt model-img
-	@echo "Building GPU Docker image (full precision models)..."
-	docker build --target runtime-gpu \
-		--build-arg TXT_MODEL_FILE=model.onnx \
-		--build-arg IMG_MODEL_FILE=model.onnx \
-		-t $(DOCKER_IMAGE):$(DOCKER_TAG)-gpu-full -t $(DOCKER_IMAGE):latest-gpu-full .
-
-docker-run-gpu: docker-build-gpu
-	docker run --gpus all -p 8080:8080 --dns 1.1.1.1 --dns 1.0.0.1 $(DOCKER_IMAGE):$(DOCKER_TAG)-gpu
-
-# Push both images
-docker-push: docker-push-cpu docker-push-gpu
+# Push image
+docker-push: docker-push-cpu
 
 # Push CPU image
 docker-push-cpu: docker-build-cpu
 	@echo "Pushing CPU image to DockerHub..."
 	docker push $(DOCKER_IMAGE):$(DOCKER_TAG)-cpu
 	docker push $(DOCKER_IMAGE):latest-cpu
-
-# Push GPU image
-docker-push-gpu: docker-build-gpu
-	@echo "Pushing GPU image to DockerHub..."
-	docker push $(DOCKER_IMAGE):$(DOCKER_TAG)-gpu
-	docker push $(DOCKER_IMAGE):latest-gpu

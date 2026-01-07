@@ -74,8 +74,6 @@ jobs:
         run: |
           # Build directly with docker (matching makefile approach but bypassing dependencies)
           # Both platforms use native docker build (no buildx needed)
-          # CUDA feature is enabled (doesn't significantly increase binary size, allows USE_GPU=1)
-          # Note: GPU support requires CUDA 12.3+ drivers (ort 2.0.0-rc.10 uses ONNX Runtime 1.22)
           docker build --target runtime-cpu \
             --build-arg TXT_MODEL_FILE=${{ matrix.txt_model }} \
             --build-arg IMG_MODEL_FILE=${{ matrix.img_model }} \
@@ -252,18 +250,8 @@ jobs:
             - `TXT_MODEL` - Path to text ONNX model (default depends on variant: `model_quantized.onnx` or `model.onnx`)
             - `TOKENIZER` - Path to tokenizer file (default: models/txt/tokenizer.json)
             - `IMG_MODEL` - Path to vision ONNX model (default depends on variant: `model_quantized.onnx` or `model.onnx`)
-            - `USE_GPU` - Set to 1 to enable GPU (requires CUDA drivers and CUDA libraries)
             - `AVERAGING` - Averaging method for image color statistics: `arithmetic` or `geometric` (default: `geometric`)
 
             **Model Variants:**
             - **Quantized** (`*-quantized.tar.gz`): Smaller files, faster inference, ~99% quality. Recommended for most use cases.
             - **Full** (`*-full.tar.gz`): Larger files, best quality (fp32 precision). Use for maximum accuracy.
-            
-            **GPU Support**: Linux binaries include CUDA support (built with `--features cuda`). 
-            
-            - **CUDA Version Requirement**: Requires CUDA 12.3+ drivers (uses ONNX Runtime 1.22 via `ort` 2.0.0-rc.10)
-            - **Driver Compatibility**: NVIDIA driver 545+ or 550+ recommended for CUDA 12.3+ support
-            - **Fallback**: If `USE_GPU=1` is set but CUDA libraries aren't available or driver is too old, ONNX Runtime will automatically fall back to CPU with a warning message
-            - **Docker GPU Images**: Use `mindthemath/nomic-embed-v1.5-rs:*-gpu` Docker images which include CUDA 12.3 + cuDNN 9 runtime libraries
-            
-            **For CUDA 12.2/12.1 Support**: Currently not supported due to ONNX Runtime version requirements. If you need CUDA 12.2 support, please open an issue to request a build variant using an older `ort` crate version.

@@ -39,113 +39,11 @@ use ort::{
     Error as OrtError,
 };
 
-#[cfg(feature = "cuda")]
-use ort::execution_providers::CUDAExecutionProvider;
-
-// Check if CUDA feature is compiled in
-#[cfg(feature = "cuda")]
-fn check_cuda_feature_enabled() -> bool {
-    true
-}
-
-#[cfg(not(feature = "cuda"))]
-fn check_cuda_feature_enabled() -> bool {
-    false
-}
-
-// Check if CUDA libraries are actually available at runtime
-// Returns (available, library_path_if_found)
-#[cfg(feature = "cuda")]
-fn check_cuda_libraries_available() -> (bool, Option<std::path::PathBuf>) {
-    use std::fs;
-    use std::path::PathBuf;
-
-    // Check common locations for ONNX Runtime CUDA providers library
-    let mut possible_paths = Vec::new();
-
-    // Check /app/lib/ (Docker container location)
-    possible_paths.push(PathBuf::from("/app/lib/libonnxruntime_providers_shared.so"));
-    possible_paths.push(PathBuf::from("/app/lib/libonnxruntime_providers_cuda.so"));
-
-    // Check target/release/deps (symlink location for local builds)
-    possible_paths.push(PathBuf::from(
-        "target/release/deps/libonnxruntime_providers_shared.so",
-    ));
-
-    // Check ~/.cache/ort.pyke.io/dfbin (ort crate cache) - search recursively
-    // Structure is: dfbin/<arch>/<hash>/onnxruntime/lib/
-    if let Ok(home) = std::env::var("HOME") {
-        let cache_dir = PathBuf::from(home).join(".cache/ort.pyke.io/dfbin");
-        if cache_dir.exists() {
-            // Search for libonnxruntime_providers_shared.so recursively (2 levels deep)
-            if let Ok(arch_entries) = fs::read_dir(&cache_dir) {
-                for arch_entry in arch_entries.flatten() {
-                    let arch_path = arch_entry.path();
-                    if arch_path.is_dir() {
-                        if let Ok(hash_entries) = fs::read_dir(&arch_path) {
-                            for hash_entry in hash_entries.flatten() {
-                                let hash_path = hash_entry.path();
-                                if hash_path.is_dir() {
-                                    let lib_path = hash_path
-                                        .join("onnxruntime/lib/libonnxruntime_providers_shared.so");
-                                    if lib_path.exists() {
-                                        possible_paths.push(lib_path);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // Check LD_LIBRARY_PATH
-    let ld_library_path = std::env::var("LD_LIBRARY_PATH").ok();
-    if let Some(ld_path) = &ld_library_path {
-        for p in ld_path.split(':') {
-            if !p.is_empty() {
-                let path = PathBuf::from(p).join("libonnxruntime_providers_shared.so");
-                possible_paths.push(path.clone());
-                let cuda_path = PathBuf::from(p).join("libonnxruntime_providers_cuda.so");
-                possible_paths.push(cuda_path);
-            }
-        }
-    }
-
-    // Check if any of these paths exist
-    for path in &possible_paths {
-        let resolved_path = if path.is_symlink() {
-            fs::read_link(path)
-                .ok()
-                .and_then(|p| if p.exists() { Some(p) } else { None })
-        } else if path.exists() {
-            Some(path.clone())
-        } else {
-            None
-        };
-
-        if let Some(lib_path) = resolved_path {
-            // Return the library directory (we'll check if it's in LD_LIBRARY_PATH later)
-            let lib_dir = lib_path.parent().map(|p| p.to_path_buf());
-            return (true, lib_dir);
-        }
-    }
-
-    (false, None)
-}
-
-#[cfg(not(feature = "cuda"))]
-fn check_cuda_libraries_available() -> (bool, Option<std::path::PathBuf>) {
-    (false, None)
-}
-
 use serde::{Deserialize, Serialize};
 use std::{
     io::Cursor,
     net::SocketAddr,
     path::{Path, PathBuf},
-    process::Command,
     sync::{Arc, Mutex},
     time::Instant,
 };
@@ -249,7 +147,6 @@ pub struct AppState {
     txt_model_path: Option<PathBuf>,
     tokenizer_path: Option<PathBuf>,
     img_model_path: Option<PathBuf>,
-    use_gpu: bool,
 }
 
 impl AppState {
@@ -257,7 +154,6 @@ impl AppState {
         txt_model: Option<PathBuf>,
         tokenizer: Option<PathBuf>,
         img_model: Option<PathBuf>,
-        use_gpu: bool,
         default_avg_method: image_stats::AveragingMethod,
     ) -> anyhow::Result<Self> {
         let cold_start = Instant::now();
@@ -267,199 +163,19 @@ impl AppState {
         let tokenizer_path = tokenizer.clone();
         let img_model_path = img_model.clone();
 
-        // Check if CUDA feature is compiled in and libraries are available
-        let cuda_feature_enabled = check_cuda_feature_enabled();
-        let (cuda_libraries_available, cuda_lib_dir) = check_cuda_libraries_available();
-
-        // Log detailed CUDA diagnostics
-        info!(
-            "CUDA diagnostics: feature_enabled={}, libraries_found={}, lib_dir={:?}",
-            cuda_feature_enabled, cuda_libraries_available, cuda_lib_dir
-        );
-
-        if use_gpu {
-            info!("USE_GPU=1 requested, checking CUDA availability...");
-            if let Ok(ld_path) = std::env::var("LD_LIBRARY_PATH") {
-                info!("  LD_LIBRARY_PATH={}", ld_path);
-            }
-        }
-
-        if use_gpu && !cuda_feature_enabled {
-            warn!("USE_GPU=1 but binary was compiled without CUDA feature. Falling back to CPU.");
-        } else if use_gpu && !cuda_libraries_available {
-            warn!("USE_GPU=1 but CUDA libraries (libonnxruntime_providers_shared.so) not found. Falling back to CPU.");
-            warn!("  Hint: Set LD_LIBRARY_PATH to point to ONNX Runtime CUDA providers library directory.");
-            // List what's in /app/lib/ if it exists (for Docker debugging)
-            if let Ok(entries) = std::fs::read_dir("/app/lib") {
-                let files: Vec<_> = entries
-                    .filter_map(|e| e.ok())
-                    .map(|e| e.file_name().to_string_lossy().to_string())
-                    .collect();
-                if !files.is_empty() {
-                    info!("  Contents of /app/lib/: {:?}", files);
-                }
-            }
-        } else if use_gpu && cuda_libraries_available {
-            info!("CUDA libraries found at {:?}", cuda_lib_dir);
-            // Check if library directory is in LD_LIBRARY_PATH
-            if let Some(lib_dir) = &cuda_lib_dir {
-                let ld_path = std::env::var("LD_LIBRARY_PATH").unwrap_or_default();
-                let lib_dir_str = lib_dir.to_string_lossy();
-                if !ld_path.split(':').any(|p| p == lib_dir_str.as_ref()) {
-                    warn!(
-                        "CUDA libraries found at {:?} but not in LD_LIBRARY_PATH.",
-                        lib_dir
-                    );
-                    warn!("  ONNX Runtime may fall back to CPU. Set: export LD_LIBRARY_PATH=\"{}\":$LD_LIBRARY_PATH", lib_dir_str);
-                }
-            }
-        }
-
-        // Only use GPU if both feature is enabled AND libraries are available
-        // Note: Even with this check, ONNX Runtime may still silently fall back to CPU
-        // if CUDA drivers aren't available or GPU isn't accessible
-        let mut actual_use_gpu = use_gpu && cuda_feature_enabled && cuda_libraries_available;
-
         // Load text model if paths provided
         let text = if let (Some(model_path), Some(tok_path)) = (txt_model, tokenizer) {
             info!("Loading text model: {:?}", model_path);
             let model_bytes = std::fs::read(&model_path)
                 .map_err(|e| anyhow::anyhow!("Failed to read model file: {}", e))?;
 
-            // Try CUDA if requested, fall back to CPU if it fails
-            let (session, text_gpu_used) = if actual_use_gpu {
-                #[cfg(feature = "cuda")]
-                {
-                    info!("Attempting to create text model session with CUDA...");
-                    let builder = SessionBuilder::new()
-                        .map_err(|e| anyhow::anyhow!("Failed to create session builder: {}", e))?
-                        .with_optimization_level(GraphOptimizationLevel::Level3)
-                        .map_err(|e| anyhow::anyhow!("Failed to set optimization level: {}", e))?;
-
-                    match builder
-                        .with_execution_providers([CUDAExecutionProvider::default().build()])
-                    {
-                        Ok(cuda_builder) => {
-                            match cuda_builder.commit_from_memory(&model_bytes) {
-                                Ok(mut s) => {
-                                    info!(
-                                        "Text model session created with CUDA execution provider"
-                                    );
-                                    // Verify CUDA actually works by running a test inference
-                                    if let Err(error_msg) = verify_cuda_session(&mut s) {
-                                        if error_msg.contains("804")
-                                            || error_msg.contains("forward compatibility")
-                                        {
-                                            warn!("CUDA driver too old for this ONNX Runtime version.");
-                                            warn!("  Hint: Upgrade NVIDIA driver to 545+ or 550+ for CUDA 12.x support");
-                                        }
-                                        warn!(
-                                            "CUDA session created but test inference failed: {}. Falling back to CPU.",
-                                            error_msg
-                                        );
-                                        // Retry without CUDA
-                                        let cpu_builder = SessionBuilder::new()
-                                            .map_err(|e| {
-                                                anyhow::anyhow!(
-                                                    "Failed to create session builder: {}",
-                                                    e
-                                                )
-                                            })?
-                                            .with_optimization_level(GraphOptimizationLevel::Level3)
-                                            .map_err(|e| {
-                                                anyhow::anyhow!(
-                                                    "Failed to set optimization level: {}",
-                                                    e
-                                                )
-                                            })?;
-                                        let s =
-                                            cpu_builder.commit_from_memory(&model_bytes).map_err(
-                                                |e| anyhow::anyhow!("Failed to load model: {}", e),
-                                            )?;
-                                        (s, false)
-                                    } else {
-                                        info!("CUDA verification successful - GPU will be used");
-                                        (s, true)
-                                    }
-                                }
-                                Err(e) => {
-                                    let error_msg = e.to_string();
-                                    if error_msg.contains("804")
-                                        || error_msg.contains("forward compatibility")
-                                    {
-                                        warn!("CUDA driver too old for this ONNX Runtime version.");
-                                        warn!("  Hint: Upgrade NVIDIA driver to 545+ or 550+ for CUDA 12.x support");
-                                    }
-                                    warn!(
-                                        "Failed to load model with CUDA: {}. Falling back to CPU.",
-                                        error_msg
-                                    );
-                                    // Retry without CUDA
-                                    let cpu_builder = SessionBuilder::new()
-                                        .map_err(|e| {
-                                            anyhow::anyhow!(
-                                                "Failed to create session builder: {}",
-                                                e
-                                            )
-                                        })?
-                                        .with_optimization_level(GraphOptimizationLevel::Level3)
-                                        .map_err(|e| {
-                                            anyhow::anyhow!(
-                                                "Failed to set optimization level: {}",
-                                                e
-                                            )
-                                        })?;
-                                    let s = cpu_builder.commit_from_memory(&model_bytes).map_err(
-                                        |e| anyhow::anyhow!("Failed to load model: {}", e),
-                                    )?;
-                                    (s, false)
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            warn!("Failed to enable CUDA execution provider: {}. Falling back to CPU.", e);
-                            // Fall back to CPU
-                            let cpu_builder = SessionBuilder::new()
-                                .map_err(|e| {
-                                    anyhow::anyhow!("Failed to create session builder: {}", e)
-                                })?
-                                .with_optimization_level(GraphOptimizationLevel::Level3)
-                                .map_err(|e| {
-                                    anyhow::anyhow!("Failed to set optimization level: {}", e)
-                                })?;
-                            let s = cpu_builder
-                                .commit_from_memory(&model_bytes)
-                                .map_err(|e| anyhow::anyhow!("Failed to load model: {}", e))?;
-                            (s, false)
-                        }
-                    }
-                }
-                #[cfg(not(feature = "cuda"))]
-                {
-                    let cpu_builder = SessionBuilder::new()
-                        .map_err(|e| anyhow::anyhow!("Failed to create session builder: {}", e))?
-                        .with_optimization_level(GraphOptimizationLevel::Level3)
-                        .map_err(|e| anyhow::anyhow!("Failed to set optimization level: {}", e))?;
-                    let s = cpu_builder
-                        .commit_from_memory(&model_bytes)
-                        .map_err(|e| anyhow::anyhow!("Failed to load model: {}", e))?;
-                    (s, false)
-                }
-            } else {
-                let builder = SessionBuilder::new()
-                    .map_err(|e| anyhow::anyhow!("Failed to create session builder: {}", e))?
-                    .with_optimization_level(GraphOptimizationLevel::Level3)
-                    .map_err(|e| anyhow::anyhow!("Failed to set optimization level: {}", e))?;
-                let s = builder
-                    .commit_from_memory(&model_bytes)
-                    .map_err(|e| anyhow::anyhow!("Failed to load model: {}", e))?;
-                (s, false)
-            };
-
-            // Update actual_use_gpu based on text model result
-            if actual_use_gpu && !text_gpu_used {
-                actual_use_gpu = false;
-            }
+            let builder = SessionBuilder::new()
+                .map_err(|e| anyhow::anyhow!("Failed to create session builder: {}", e))?
+                .with_optimization_level(GraphOptimizationLevel::Level3)
+                .map_err(|e| anyhow::anyhow!("Failed to set optimization level: {}", e))?;
+            let session = builder
+                .commit_from_memory(&model_bytes)
+                .map_err(|e| anyhow::anyhow!("Failed to load model: {}", e))?;
 
             let tokenizer = Tokenizer::from_file(&tok_path).map_err(|e| anyhow::anyhow!(e))?;
             Some(Arc::new(TextState {
@@ -476,140 +192,13 @@ impl AppState {
             let model_bytes = std::fs::read(&model_path)
                 .map_err(|e| anyhow::anyhow!("Failed to read model file: {}", e))?;
 
-            // Try CUDA if requested, fall back to CPU if it fails
-            let (session, vision_gpu_used) = if actual_use_gpu {
-                #[cfg(feature = "cuda")]
-                {
-                    info!("Attempting to create vision model session with CUDA...");
-                    let builder = SessionBuilder::new()
-                        .map_err(|e| anyhow::anyhow!("Failed to create session builder: {}", e))?
-                        .with_optimization_level(GraphOptimizationLevel::Level3)
-                        .map_err(|e| anyhow::anyhow!("Failed to set optimization level: {}", e))?;
-
-                    match builder
-                        .with_execution_providers([CUDAExecutionProvider::default().build()])
-                    {
-                        Ok(cuda_builder) => {
-                            match cuda_builder.commit_from_memory(&model_bytes) {
-                                Ok(mut s) => {
-                                    info!(
-                                        "Vision model session created with CUDA execution provider"
-                                    );
-                                    // Verify CUDA actually works by running a test inference
-                                    if let Err(error_msg) = verify_cuda_vision_session(&mut s) {
-                                        if error_msg.contains("804")
-                                            || error_msg.contains("forward compatibility")
-                                        {
-                                            warn!("CUDA driver too old for this ONNX Runtime version.");
-                                            warn!("  Hint: Upgrade NVIDIA driver to 545+ or 550+ for CUDA 12.x support");
-                                        }
-                                        warn!(
-                                            "CUDA session created but test inference failed: {}. Falling back to CPU.",
-                                            error_msg
-                                        );
-                                        // Retry without CUDA
-                                        let cpu_builder = SessionBuilder::new()
-                                            .map_err(|e| {
-                                                anyhow::anyhow!(
-                                                    "Failed to create session builder: {}",
-                                                    e
-                                                )
-                                            })?
-                                            .with_optimization_level(GraphOptimizationLevel::Level3)
-                                            .map_err(|e| {
-                                                anyhow::anyhow!(
-                                                    "Failed to set optimization level: {}",
-                                                    e
-                                                )
-                                            })?;
-                                        let s =
-                                            cpu_builder.commit_from_memory(&model_bytes).map_err(
-                                                |e| anyhow::anyhow!("Failed to load model: {}", e),
-                                            )?;
-                                        (s, false)
-                                    } else {
-                                        info!("CUDA verification successful - GPU will be used");
-                                        (s, true)
-                                    }
-                                }
-                                Err(e) => {
-                                    let error_msg = e.to_string();
-                                    if error_msg.contains("804")
-                                        || error_msg.contains("forward compatibility")
-                                    {
-                                        warn!("CUDA driver too old for this ONNX Runtime version.");
-                                        warn!("  Hint: Upgrade NVIDIA driver to 545+ or 550+ for CUDA 12.x support");
-                                    }
-                                    warn!(
-                                        "Failed to load vision model with CUDA: {}. Falling back to CPU.",
-                                        error_msg
-                                    );
-                                    // Retry without CUDA
-                                    let cpu_builder = SessionBuilder::new()
-                                        .map_err(|e| {
-                                            anyhow::anyhow!(
-                                                "Failed to create session builder: {}",
-                                                e
-                                            )
-                                        })?
-                                        .with_optimization_level(GraphOptimizationLevel::Level3)
-                                        .map_err(|e| {
-                                            anyhow::anyhow!(
-                                                "Failed to set optimization level: {}",
-                                                e
-                                            )
-                                        })?;
-                                    let s = cpu_builder.commit_from_memory(&model_bytes).map_err(
-                                        |e| anyhow::anyhow!("Failed to load model: {}", e),
-                                    )?;
-                                    (s, false)
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            warn!("Failed to enable CUDA execution provider for vision model: {}. Falling back to CPU.", e);
-                            // Fall back to CPU
-                            let cpu_builder = SessionBuilder::new()
-                                .map_err(|e| {
-                                    anyhow::anyhow!("Failed to create session builder: {}", e)
-                                })?
-                                .with_optimization_level(GraphOptimizationLevel::Level3)
-                                .map_err(|e| {
-                                    anyhow::anyhow!("Failed to set optimization level: {}", e)
-                                })?;
-                            let s = cpu_builder
-                                .commit_from_memory(&model_bytes)
-                                .map_err(|e| anyhow::anyhow!("Failed to load model: {}", e))?;
-                            (s, false)
-                        }
-                    }
-                }
-                #[cfg(not(feature = "cuda"))]
-                {
-                    let cpu_builder = SessionBuilder::new()
-                        .map_err(|e| anyhow::anyhow!("Failed to create session builder: {}", e))?
-                        .with_optimization_level(GraphOptimizationLevel::Level3)
-                        .map_err(|e| anyhow::anyhow!("Failed to set optimization level: {}", e))?;
-                    let s = cpu_builder
-                        .commit_from_memory(&model_bytes)
-                        .map_err(|e| anyhow::anyhow!("Failed to load model: {}", e))?;
-                    (s, false)
-                }
-            } else {
-                let builder = SessionBuilder::new()
-                    .map_err(|e| anyhow::anyhow!("Failed to create session builder: {}", e))?
-                    .with_optimization_level(GraphOptimizationLevel::Level3)
-                    .map_err(|e| anyhow::anyhow!("Failed to set optimization level: {}", e))?;
-                let s = builder
-                    .commit_from_memory(&model_bytes)
-                    .map_err(|e| anyhow::anyhow!("Failed to load model: {}", e))?;
-                (s, false)
-            };
-
-            // Update actual_use_gpu based on vision model result
-            if actual_use_gpu && !vision_gpu_used {
-                actual_use_gpu = false;
-            }
+            let builder = SessionBuilder::new()
+                .map_err(|e| anyhow::anyhow!("Failed to create session builder: {}", e))?
+                .with_optimization_level(GraphOptimizationLevel::Level3)
+                .map_err(|e| anyhow::anyhow!("Failed to set optimization level: {}", e))?;
+            let session = builder
+                .commit_from_memory(&model_bytes)
+                .map_err(|e| anyhow::anyhow!("Failed to load model: {}", e))?;
 
             Some(Arc::new(VisionState {
                 session: Mutex::new(session),
@@ -645,7 +234,6 @@ impl AppState {
             txt_model_path,
             tokenizer_path,
             img_model_path,
-            use_gpu: actual_use_gpu, // Store actual CUDA status, not just env var
         })
     }
 }
@@ -825,9 +413,6 @@ struct InfoResponse {
     /// Default averaging method for image stats
     #[schema(example = "geometric")]
     averaging: String,
-    /// CUDA/GPU support enabled
-    #[schema(example = true)]
-    load_cuda: bool,
     /// Text model file path (if loaded)
     #[schema(example = "models/txt/model_quantized.onnx")]
     txt_model: Option<String>,
@@ -925,10 +510,6 @@ async fn main() {
         .and_then(|p| p.parse().ok())
         .unwrap_or(8080);
 
-    let use_gpu = std::env::var("USE_GPU")
-        .map(|v| v == "1" || v.to_lowercase() == "true")
-        .unwrap_or(false);
-
     let disable_cors = std::env::var("DISABLE_CORS")
         .map(|v| matches!(v.to_lowercase().as_str(), "true" | "1" | "yes" | "y"))
         .unwrap_or(false);
@@ -968,23 +549,18 @@ async fn main() {
     };
 
     // Initialize application state
-    let state =
-        match AppState::new(txt_model, tokenizer, img_model, use_gpu, default_avg_method).await {
-            Ok(state) => state,
-            Err(e) => {
-                eprintln!("Failed to initialize server: {}", e);
-                std::process::exit(1);
-            }
-        };
+    let state = match AppState::new(txt_model, tokenizer, img_model, default_avg_method).await {
+        Ok(state) => state,
+        Err(e) => {
+            eprintln!("Failed to initialize server: {}", e);
+            std::process::exit(1);
+        }
+    };
 
-    let device = if state.use_gpu { "GPU" } else { "CPU" };
     let text_status = if state.text.is_some() { "✓" } else { "✗" };
     let vision_status = if state.vision.is_some() { "✓" } else { "✗" };
 
-    info!(
-        "🚀 Nomic embedding server ready on http://0.0.0.0:{} ({})",
-        port, device
-    );
+    info!("🚀 Nomic embedding server ready on http://0.0.0.0:{}", port);
     info!(
         "   Text model:   {} /txt/embed, /txt/batch, /txt/query",
         text_status
@@ -1129,7 +705,6 @@ async fn info_handler(State(state): State<AppState>) -> Json<InfoResponse> {
             image_stats::AveragingMethod::Arithmetic => "arithmetic".to_string(),
             image_stats::AveragingMethod::Geometric => "geometric".to_string(),
         },
-        load_cuda: state.use_gpu,
         txt_model: state
             .txt_model_path
             .as_ref()
@@ -1497,15 +1072,6 @@ async fn openapi_handler(State(state): State<AppState>) -> Json<serde_json::Valu
                                         );
                                     }
                                 }
-                                // Also update InfoResponse.load_cuda example
-                                if let Some(load_cuda) = props.get_mut("load_cuda") {
-                                    if let Some(load_cuda_obj) = load_cuda.as_object_mut() {
-                                        load_cuda_obj.insert(
-                                            "example".to_string(),
-                                            serde_json::json!(state.use_gpu),
-                                        );
-                                    }
-                                }
                             }
                         }
                     }
@@ -1661,168 +1227,6 @@ async fn fetch_image_url(url: &str) -> Result<Vec<u8>, Error> {
             )
         });
     result
-}
-
-// ============================================================================
-// CUDA Verification
-// ============================================================================
-
-/// Verify CUDA session actually works by running a test inference and checking GPU usage
-/// This catches driver compatibility issues that only appear at runtime
-#[cfg(feature = "cuda")]
-fn verify_cuda_session(session: &mut Session) -> Result<(), String> {
-    use ort::session::{SessionInputValue, SessionInputs};
-    use ort::value::Value;
-
-    // Get GPU memory before inference
-    let gpu_mem_before = get_gpu_memory_used().unwrap_or(0);
-
-    // Create a larger test input to force GPU usage - 32 tokens
-    let test_input_shape = vec![1i64, 32i64];
-    let test_ids: Vec<i64> = vec![101; 32]; // CLS token repeated
-    let test_type_ids: Vec<i64> = vec![0; 32];
-    let test_attention: Vec<i64> = vec![1; 32];
-
-    let input_ids: Value = Value::from_array((test_input_shape.clone(), test_ids))
-        .map_err(|e: OrtError| e.to_string())
-        .map(|v| v.into())?;
-    let token_type_ids: Value = Value::from_array((test_input_shape.clone(), test_type_ids))
-        .map_err(|e: OrtError| e.to_string())
-        .map(|v| v.into())?;
-    let attention_mask: Value = Value::from_array((test_input_shape, test_attention))
-        .map_err(|e: OrtError| e.to_string())
-        .map(|v| v.into())?;
-
-    let test_inputs = vec![
-        ("input_ids".to_string(), SessionInputValue::from(input_ids)),
-        (
-            "token_type_ids".to_string(),
-            SessionInputValue::from(token_type_ids),
-        ),
-        (
-            "attention_mask".to_string(),
-            SessionInputValue::from(attention_mask),
-        ),
-    ];
-
-    // Try to run inference - this will fail if CUDA can't actually be used
-    match session.run(SessionInputs::from(test_inputs)) {
-        Ok(_) => {}
-        Err(e) => return Err(e.to_string()),
-    }
-
-    // Check GPU memory after - if it increased significantly, GPU is being used
-    let gpu_mem_after = get_gpu_memory_used().unwrap_or(0);
-    let memory_increase = if gpu_mem_after > gpu_mem_before {
-        gpu_mem_after - gpu_mem_before
-    } else {
-        0
-    };
-
-    // Require at least 10 MiB increase to confirm GPU usage (small increases might be noise)
-    if memory_increase >= 10 {
-        info!(
-            "GPU memory increased from {} MiB to {} MiB (+{} MiB) - CUDA is active",
-            gpu_mem_before, gpu_mem_after, memory_increase
-        );
-        Ok(())
-    } else if gpu_mem_before > 0 {
-        // GPU memory exists but didn't increase meaningfully - likely using CPU
-        // Return error to trigger fallback
-        Err(format!(
-            "CUDA session created but GPU memory unchanged ({} MiB -> {} MiB, +{} MiB). ONNX Runtime is likely using CPU. This may indicate driver compatibility issues.",
-            gpu_mem_before, gpu_mem_after, memory_increase
-        ))
-    } else {
-        // Can't check GPU memory (nvidia-smi not available) - assume it works
-        // This allows Docker environments where nvidia-smi might not be accessible
-        warn!("Cannot verify GPU memory usage (nvidia-smi unavailable). Assuming CUDA is active.");
-        Ok(())
-    }
-}
-
-/// Get current GPU memory usage in MiB
-#[cfg(feature = "cuda")]
-fn get_gpu_memory_used() -> Option<u64> {
-    let output = Command::new("nvidia-smi")
-        .args(&["--query-gpu=memory.used", "--format=csv,noheader,nounits"])
-        .output()
-        .ok()?;
-
-    let stdout = String::from_utf8(output.stdout).ok()?;
-    stdout.trim().parse::<u64>().ok()
-}
-
-#[cfg(not(feature = "cuda"))]
-fn verify_cuda_session(_session: &mut Session) -> Result<(), String> {
-    Ok(())
-}
-
-#[cfg(not(feature = "cuda"))]
-fn get_gpu_memory_used() -> Option<u64> {
-    None
-}
-
-/// Verify CUDA vision session actually works by running a test inference and checking GPU usage
-#[cfg(feature = "cuda")]
-fn verify_cuda_vision_session(session: &mut Session) -> Result<(), String> {
-    use ort::session::{SessionInputValue, SessionInputs};
-    use ort::value::Value;
-
-    // Get GPU memory before inference
-    let gpu_mem_before = get_gpu_memory_used().unwrap_or(0);
-
-    // Create test input - 1x3x224x224 (all zeros)
-    let test_input_shape = vec![1i64, 3, IMAGE_SIZE as i64, IMAGE_SIZE as i64];
-    let test_pixels: Vec<f32> = vec![0.0; 3 * IMAGE_SIZE * IMAGE_SIZE];
-
-    let pixel_values: Value = Value::from_array((test_input_shape, test_pixels))
-        .map_err(|e: OrtError| e.to_string())
-        .map(|v| v.into())?;
-    let test_inputs = vec![(
-        "pixel_values".to_string(),
-        SessionInputValue::from(pixel_values),
-    )];
-
-    // Try to run inference - this will fail if CUDA can't actually be used
-    match session.run(SessionInputs::from(test_inputs)) {
-        Ok(_) => {}
-        Err(e) => return Err(e.to_string()),
-    }
-
-    // Check GPU memory after - if it increased significantly, GPU is being used
-    let gpu_mem_after = get_gpu_memory_used().unwrap_or(0);
-    let memory_increase = if gpu_mem_after > gpu_mem_before {
-        gpu_mem_after - gpu_mem_before
-    } else {
-        0
-    };
-
-    // Require at least 10 MiB increase to confirm GPU usage (small increases might be noise)
-    if memory_increase >= 10 {
-        info!(
-            "GPU memory increased from {} MiB to {} MiB (+{} MiB) - CUDA is active",
-            gpu_mem_before, gpu_mem_after, memory_increase
-        );
-        Ok(())
-    } else if gpu_mem_before > 0 {
-        // GPU memory exists but didn't increase meaningfully - likely using CPU
-        // Return error to trigger fallback
-        Err(format!(
-            "CUDA session created but GPU memory unchanged ({} MiB -> {} MiB, +{} MiB). ONNX Runtime is likely using CPU. This may indicate driver compatibility issues.",
-            gpu_mem_before, gpu_mem_after, memory_increase
-        ))
-    } else {
-        // Can't check GPU memory (nvidia-smi not available) - assume it works
-        // This allows Docker environments where nvidia-smi might not be accessible
-        warn!("Cannot verify GPU memory usage (nvidia-smi unavailable). Assuming CUDA is active.");
-        Ok(())
-    }
-}
-
-#[cfg(not(feature = "cuda"))]
-fn verify_cuda_vision_session(_session: &mut Session) -> Result<(), String> {
-    Ok(())
 }
 
 // ============================================================================
