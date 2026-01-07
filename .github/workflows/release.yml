@@ -16,21 +16,24 @@ jobs:
             runner: ubuntu-latest
             txt_model: model_quantized.onnx
             img_model: model_quantized.onnx
+
           - platform: linux/amd64
             artifact: linux-x64-full
             runner: ubuntu-latest
             txt_model: model.onnx
             img_model: model.onnx
+
           - platform: linux/arm64
             artifact: linux-arm64-quantized
             runner: ubuntu-24.04-arm
             txt_model: model_quantized.onnx
             img_model: model_quantized.onnx
+
           - platform: linux/arm64
             artifact: linux-arm64-full
             runner: ubuntu-24.04-arm
             txt_model: model.onnx
-            img_model: model.onnx
+
     runs-on: ${{ matrix.runner }}
     env:
       VERSION: ${{ github.ref_name }}
