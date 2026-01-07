@@ -71,6 +71,7 @@ jobs:
         run: |
           # Build directly with docker (matching makefile approach but bypassing dependencies)
           # Both platforms use native docker build (no buildx needed)
+          # CUDA feature is enabled (doesn't significantly increase binary size, allows USE_GPU=1)
           docker build --target runtime-cpu \
             --build-arg TXT_MODEL_FILE=${{ matrix.txt_model }} \
             --build-arg IMG_MODEL_FILE=${{ matrix.img_model }} \
@@ -247,11 +248,11 @@ jobs:
             - `TXT_MODEL` - Path to text ONNX model (default depends on variant: `model_quantized.onnx` or `model.onnx`)
             - `TOKENIZER` - Path to tokenizer file (default: models/txt/tokenizer.json)
             - `IMG_MODEL` - Path to vision ONNX model (default depends on variant: `model_quantized.onnx` or `model.onnx`)
-            - `USE_GPU` - Set to 1 to enable GPU (requires CUDA drivers)
+            - `USE_GPU` - Set to 1 to enable GPU (requires CUDA drivers and CUDA libraries)
             - `AVERAGING` - Averaging method for image color statistics: `arithmetic` or `geometric` (default: `geometric`)
 
             **Model Variants:**
             - **Quantized** (`*-quantized.tar.gz`): Smaller files, faster inference, ~99% quality. Recommended for most use cases.
             - **Full** (`*-full.tar.gz`): Larger files, best quality (fp32 precision). Use for maximum accuracy.
             
-            **Note**: This release includes CPU-only runtime. For GPU support, use the Docker images (`mindthemath/nomic-embed-v1.5-rs:*-gpu`) or manually install CUDA libraries.
+            **Note**: Linux binaries include CUDA support (built with `--features cuda`). If `USE_GPU=1` is set but CUDA libraries aren't available, ONNX Runtime will fall back to CPU automatically. For GPU support, ensure CUDA drivers and libraries are installed, or use the Docker GPU images (`mindthemath/nomic-embed-v1.5-rs:*-gpu`).

@@ -31,7 +31,6 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use image::{DynamicImage, ImageReader};
 use ndarray::ShapeError;
 use ort::{
-    execution_providers::CUDAExecutionProvider,
     session::{
         builder::{GraphOptimizationLevel, SessionBuilder},
         Session, SessionInputValue, SessionInputs,
@@ -39,6 +38,96 @@ use ort::{
     value::Value,
     Error as OrtError,
 };
+
+#[cfg(feature = "cuda")]
+use ort::execution_providers::CUDAExecutionProvider;
+
+// Check if CUDA feature is compiled in
+#[cfg(feature = "cuda")]
+fn check_cuda_feature_enabled() -> bool {
+    true
+}
+
+#[cfg(not(feature = "cuda"))]
+fn check_cuda_feature_enabled() -> bool {
+    false
+}
+
+// Check if CUDA libraries are actually available at runtime
+// Returns (available, library_path_if_found)
+#[cfg(feature = "cuda")]
+fn check_cuda_libraries_available() -> (bool, Option<std::path::PathBuf>) {
+    use std::fs;
+    use std::path::PathBuf;
+
+    // Check common locations for ONNX Runtime CUDA providers library
+    let mut possible_paths = Vec::new();
+
+    // Check target/release/deps (symlink location)
+    possible_paths.push(PathBuf::from(
+        "target/release/deps/libonnxruntime_providers_shared.so",
+    ));
+
+    // Check ~/.cache/ort.pyke.io/dfbin (ort crate cache) - search recursively
+    if let Ok(home) = std::env::var("HOME") {
+        let cache_dir = PathBuf::from(home).join(".cache/ort.pyke.io/dfbin");
+        if cache_dir.exists() {
+            // Search for libonnxruntime_providers_shared.so recursively
+            if let Ok(entries) = fs::read_dir(&cache_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        let lib_path =
+                            path.join("onnxruntime/lib/libonnxruntime_providers_shared.so");
+                        if lib_path.exists() {
+                            possible_paths.push(lib_path);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Check LD_LIBRARY_PATH
+    let ld_library_path = std::env::var("LD_LIBRARY_PATH").ok();
+    if let Some(ld_path) = &ld_library_path {
+        for p in ld_path.split(':') {
+            let path = PathBuf::from(p).join("libonnxruntime_providers_shared.so");
+            possible_paths.push(path);
+        }
+    }
+
+    // Check if any of these paths exist
+    for path in possible_paths {
+        let resolved_path = if path.is_symlink() {
+            fs::read_link(&path)
+                .ok()
+                .and_then(|p| if p.exists() { Some(p) } else { None })
+        } else if path.exists() {
+            Some(path.clone())
+        } else {
+            None
+        };
+
+        if let Some(lib_path) = resolved_path {
+            // Return the library directory (we'll check if it's in LD_LIBRARY_PATH later)
+            let lib_dir = lib_path.parent().map(|p| p.to_path_buf());
+            return (true, lib_dir);
+        }
+    }
+
+    (false, None)
+}
+
+#[cfg(not(feature = "cuda"))]
+fn check_cuda_libraries_available() -> (bool, Option<std::path::PathBuf>) {
+    (false, None)
+}
+
+#[cfg(not(feature = "cuda"))]
+fn check_cuda_libraries_available() -> bool {
+    false
+}
 use serde::{Deserialize, Serialize};
 use std::{
     io::Cursor,
@@ -165,23 +254,121 @@ impl AppState {
         let tokenizer_path = tokenizer.clone();
         let img_model_path = img_model.clone();
 
+        // Check if CUDA feature is compiled in and libraries are available
+        let cuda_feature_enabled = check_cuda_feature_enabled();
+        let (cuda_libraries_available, cuda_lib_dir) = check_cuda_libraries_available();
+
+        if use_gpu && !cuda_feature_enabled {
+            warn!("USE_GPU=1 but binary was compiled without CUDA feature. Falling back to CPU.");
+        } else if use_gpu && !cuda_libraries_available {
+            warn!("USE_GPU=1 but CUDA libraries (libonnxruntime_providers_shared.so) not found. Falling back to CPU.");
+            warn!("  Hint: Set LD_LIBRARY_PATH to point to ONNX Runtime CUDA providers library directory.");
+        } else if use_gpu && cuda_libraries_available {
+            // Check if library directory is in LD_LIBRARY_PATH
+            if let Some(lib_dir) = &cuda_lib_dir {
+                let ld_path = std::env::var("LD_LIBRARY_PATH").unwrap_or_default();
+                let lib_dir_str = lib_dir.to_string_lossy();
+                if !ld_path.split(':').any(|p| p == lib_dir_str.as_ref()) {
+                    warn!(
+                        "CUDA libraries found at {:?} but not in LD_LIBRARY_PATH.",
+                        lib_dir
+                    );
+                    warn!("  ONNX Runtime may fall back to CPU. Set: export LD_LIBRARY_PATH=\"{}\":$LD_LIBRARY_PATH", lib_dir_str);
+                }
+            }
+        }
+
+        // Only use GPU if both feature is enabled AND libraries are available
+        // Note: Even with this check, ONNX Runtime may still silently fall back to CPU
+        // if CUDA drivers aren't available or GPU isn't accessible
+        let mut actual_use_gpu = use_gpu && cuda_feature_enabled && cuda_libraries_available;
+
         // Load text model if paths provided
         let text = if let (Some(model_path), Some(tok_path)) = (txt_model, tokenizer) {
             info!("Loading text model: {:?}", model_path);
-            let mut builder = SessionBuilder::new()
-                .map_err(|e| anyhow::anyhow!("Failed to create session builder: {}", e))?
-                .with_optimization_level(GraphOptimizationLevel::Level3)
-                .map_err(|e| anyhow::anyhow!("Failed to set optimization level: {}", e))?;
-            if use_gpu {
-                builder = builder
-                    .with_execution_providers([CUDAExecutionProvider::default().build()])
-                    .map_err(|e| anyhow::anyhow!("Failed to set execution providers: {}", e))?;
-            }
             let model_bytes = std::fs::read(&model_path)
                 .map_err(|e| anyhow::anyhow!("Failed to read model file: {}", e))?;
-            let session = builder
-                .commit_from_memory(&model_bytes)
-                .map_err(|e| anyhow::anyhow!("Failed to load model: {}", e))?;
+
+            // Try CUDA if requested, fall back to CPU if it fails
+            let session = if actual_use_gpu {
+                #[cfg(feature = "cuda")]
+                {
+                    let builder = SessionBuilder::new()
+                        .map_err(|e| anyhow::anyhow!("Failed to create session builder: {}", e))?
+                        .with_optimization_level(GraphOptimizationLevel::Level3)
+                        .map_err(|e| anyhow::anyhow!("Failed to set optimization level: {}", e))?;
+
+                    match builder
+                        .with_execution_providers([CUDAExecutionProvider::default().build()])
+                    {
+                        Ok(cuda_builder) => {
+                            match cuda_builder.commit_from_memory(&model_bytes) {
+                                Ok(s) => s,
+                                Err(e) => {
+                                    warn!(
+                                        "Failed to load model with CUDA: {}. Falling back to CPU.",
+                                        e
+                                    );
+                                    actual_use_gpu = false;
+                                    // Retry without CUDA
+                                    let cpu_builder = SessionBuilder::new()
+                                        .map_err(|e| {
+                                            anyhow::anyhow!(
+                                                "Failed to create session builder: {}",
+                                                e
+                                            )
+                                        })?
+                                        .with_optimization_level(GraphOptimizationLevel::Level3)
+                                        .map_err(|e| {
+                                            anyhow::anyhow!(
+                                                "Failed to set optimization level: {}",
+                                                e
+                                            )
+                                        })?;
+                                    cpu_builder.commit_from_memory(&model_bytes).map_err(|e| {
+                                        anyhow::anyhow!("Failed to load model: {}", e)
+                                    })?
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            warn!("Failed to enable CUDA execution provider: {}. Falling back to CPU.", e);
+                            actual_use_gpu = false;
+                            // Fall back to CPU
+                            let cpu_builder = SessionBuilder::new()
+                                .map_err(|e| {
+                                    anyhow::anyhow!("Failed to create session builder: {}", e)
+                                })?
+                                .with_optimization_level(GraphOptimizationLevel::Level3)
+                                .map_err(|e| {
+                                    anyhow::anyhow!("Failed to set optimization level: {}", e)
+                                })?;
+                            cpu_builder
+                                .commit_from_memory(&model_bytes)
+                                .map_err(|e| anyhow::anyhow!("Failed to load model: {}", e))?
+                        }
+                    }
+                }
+                #[cfg(not(feature = "cuda"))]
+                {
+                    actual_use_gpu = false;
+                    let cpu_builder = SessionBuilder::new()
+                        .map_err(|e| anyhow::anyhow!("Failed to create session builder: {}", e))?
+                        .with_optimization_level(GraphOptimizationLevel::Level3)
+                        .map_err(|e| anyhow::anyhow!("Failed to set optimization level: {}", e))?;
+                    cpu_builder
+                        .commit_from_memory(&model_bytes)
+                        .map_err(|e| anyhow::anyhow!("Failed to load model: {}", e))?
+                }
+            } else {
+                let builder = SessionBuilder::new()
+                    .map_err(|e| anyhow::anyhow!("Failed to create session builder: {}", e))?
+                    .with_optimization_level(GraphOptimizationLevel::Level3)
+                    .map_err(|e| anyhow::anyhow!("Failed to set optimization level: {}", e))?;
+                builder
+                    .commit_from_memory(&model_bytes)
+                    .map_err(|e| anyhow::anyhow!("Failed to load model: {}", e))?
+            };
             let tokenizer = Tokenizer::from_file(&tok_path).map_err(|e| anyhow::anyhow!(e))?;
             Some(Arc::new(TextState {
                 session: Mutex::new(session),
@@ -194,20 +381,89 @@ impl AppState {
         // Load vision model if path provided
         let vision = if let Some(model_path) = img_model {
             info!("Loading vision model: {:?}", model_path);
-            let mut builder = SessionBuilder::new()
-                .map_err(|e| anyhow::anyhow!("Failed to create session builder: {}", e))?
-                .with_optimization_level(GraphOptimizationLevel::Level3)
-                .map_err(|e| anyhow::anyhow!("Failed to set optimization level: {}", e))?;
-            if use_gpu {
-                builder = builder
-                    .with_execution_providers([CUDAExecutionProvider::default().build()])
-                    .map_err(|e| anyhow::anyhow!("Failed to set execution providers: {}", e))?;
-            }
             let model_bytes = std::fs::read(&model_path)
                 .map_err(|e| anyhow::anyhow!("Failed to read model file: {}", e))?;
-            let session = builder
-                .commit_from_memory(&model_bytes)
-                .map_err(|e| anyhow::anyhow!("Failed to load model: {}", e))?;
+
+            // Try CUDA if requested, fall back to CPU if it fails
+            let session = if actual_use_gpu {
+                #[cfg(feature = "cuda")]
+                {
+                    let builder = SessionBuilder::new()
+                        .map_err(|e| anyhow::anyhow!("Failed to create session builder: {}", e))?
+                        .with_optimization_level(GraphOptimizationLevel::Level3)
+                        .map_err(|e| anyhow::anyhow!("Failed to set optimization level: {}", e))?;
+
+                    match builder
+                        .with_execution_providers([CUDAExecutionProvider::default().build()])
+                    {
+                        Ok(cuda_builder) => {
+                            match cuda_builder.commit_from_memory(&model_bytes) {
+                                Ok(s) => s,
+                                Err(e) => {
+                                    warn!(
+                                        "Failed to load vision model with CUDA: {}. Falling back to CPU.",
+                                        e
+                                    );
+                                    actual_use_gpu = false;
+                                    // Retry without CUDA
+                                    let cpu_builder = SessionBuilder::new()
+                                        .map_err(|e| {
+                                            anyhow::anyhow!(
+                                                "Failed to create session builder: {}",
+                                                e
+                                            )
+                                        })?
+                                        .with_optimization_level(GraphOptimizationLevel::Level3)
+                                        .map_err(|e| {
+                                            anyhow::anyhow!(
+                                                "Failed to set optimization level: {}",
+                                                e
+                                            )
+                                        })?;
+                                    cpu_builder.commit_from_memory(&model_bytes).map_err(|e| {
+                                        anyhow::anyhow!("Failed to load model: {}", e)
+                                    })?
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            warn!("Failed to enable CUDA execution provider for vision model: {}. Falling back to CPU.", e);
+                            actual_use_gpu = false;
+                            // Fall back to CPU
+                            let cpu_builder = SessionBuilder::new()
+                                .map_err(|e| {
+                                    anyhow::anyhow!("Failed to create session builder: {}", e)
+                                })?
+                                .with_optimization_level(GraphOptimizationLevel::Level3)
+                                .map_err(|e| {
+                                    anyhow::anyhow!("Failed to set optimization level: {}", e)
+                                })?;
+                            cpu_builder
+                                .commit_from_memory(&model_bytes)
+                                .map_err(|e| anyhow::anyhow!("Failed to load model: {}", e))?
+                        }
+                    }
+                }
+                #[cfg(not(feature = "cuda"))]
+                {
+                    actual_use_gpu = false;
+                    let cpu_builder = SessionBuilder::new()
+                        .map_err(|e| anyhow::anyhow!("Failed to create session builder: {}", e))?
+                        .with_optimization_level(GraphOptimizationLevel::Level3)
+                        .map_err(|e| anyhow::anyhow!("Failed to set optimization level: {}", e))?;
+                    cpu_builder
+                        .commit_from_memory(&model_bytes)
+                        .map_err(|e| anyhow::anyhow!("Failed to load model: {}", e))?
+                }
+            } else {
+                let builder = SessionBuilder::new()
+                    .map_err(|e| anyhow::anyhow!("Failed to create session builder: {}", e))?
+                    .with_optimization_level(GraphOptimizationLevel::Level3)
+                    .map_err(|e| anyhow::anyhow!("Failed to set optimization level: {}", e))?;
+                builder
+                    .commit_from_memory(&model_bytes)
+                    .map_err(|e| anyhow::anyhow!("Failed to load model: {}", e))?
+            };
             Some(Arc::new(VisionState {
                 session: Mutex::new(session),
             }))
@@ -242,7 +498,7 @@ impl AppState {
             txt_model_path,
             tokenizer_path,
             img_model_path,
-            use_gpu,
+            use_gpu: actual_use_gpu, // Store actual CUDA status, not just env var
         })
     }
 }
@@ -574,7 +830,7 @@ async fn main() {
             }
         };
 
-    let device = if use_gpu { "GPU" } else { "CPU" };
+    let device = if state.use_gpu { "GPU" } else { "CPU" };
     let text_status = if state.text.is_some() { "✓" } else { "✗" };
     let vision_status = if state.vision.is_some() { "✓" } else { "✗" };
 
