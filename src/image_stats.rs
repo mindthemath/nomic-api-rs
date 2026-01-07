@@ -55,7 +55,7 @@ pub struct ImageStatsRequest {
     /// Image content: URL (http/https), data URL (data:image/...), or raw base64
     #[schema(example = "https://picsum.photos/400/300")]
     pub content: String,
-    /// Averaging method for color calculation (defaults to AVG_METHOD env var or geometric)
+    /// Averaging method for color calculation (defaults to AVERAGING env var or geometric)
     #[serde(default)]
     pub averaging_method: Option<AveragingMethod>,
 }

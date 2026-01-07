@@ -217,7 +217,7 @@ impl AppState {
 
         let cold_start_time = cold_start.elapsed();
         info!(
-            "Cold start complete - text model: {}, vision model: {}, avg_method: {}, time: {:.2}ms",
+            "Cold start complete - text model: {}, vision model: {}, averaging: {}, time: {:.2}ms",
             if text.is_some() {
                 "loaded"
             } else {
@@ -421,7 +421,7 @@ struct HealthResponse {
 struct InfoResponse {
     /// Default averaging method for image stats
     #[schema(example = "geometric")]
-    avg_method: String,
+    averaging: String,
     /// CUDA/GPU support enabled
     #[schema(example = true)]
     load_cuda: bool,
@@ -531,7 +531,7 @@ async fn main() {
         .unwrap_or(false);
 
     // Default averaging method for image stats
-    let default_avg_method = std::env::var("AVG_METHOD")
+    let default_avg_method = std::env::var("AVERAGING")
         .ok()
         .and_then(|v| match v.to_lowercase().as_str() {
             "arithmetic" => Some(image_stats::AveragingMethod::Arithmetic),
@@ -722,7 +722,7 @@ async fn health_handler(State(state): State<AppState>) -> Json<HealthResponse> {
 )]
 async fn info_handler(State(state): State<AppState>) -> Json<InfoResponse> {
     Json(InfoResponse {
-        avg_method: match state.default_avg_method {
+        averaging: match state.default_avg_method {
             image_stats::AveragingMethod::Arithmetic => "arithmetic".to_string(),
             image_stats::AveragingMethod::Geometric => "geometric".to_string(),
         },
@@ -1040,15 +1040,17 @@ async fn openapi_handler(State(state): State<AppState>) -> Json<serde_json::Valu
                         if let Some(image_stats_request) = schemas_obj.get_mut("ImageStatsRequest")
                         {
                             if let Some(props) = image_stats_request.get_mut("properties") {
-                                if let Some(avg_method) = props.get_mut("averaging_method") {
-                                    if let Some(avg_method_obj) = avg_method.as_object_mut() {
+                                if let Some(averaging_method) = props.get_mut("averaging_method") {
+                                    if let Some(averaging_method_obj) =
+                                        averaging_method.as_object_mut()
+                                    {
                                         let default_example = match state.default_avg_method {
                                             image_stats::AveragingMethod::Arithmetic => {
                                                 "arithmetic"
                                             }
                                             image_stats::AveragingMethod::Geometric => "geometric",
                                         };
-                                        avg_method_obj.insert(
+                                        averaging_method_obj.insert(
                                             "example".to_string(),
                                             serde_json::json!(default_example),
                                         );
@@ -1070,6 +1072,34 @@ async fn openapi_handler(State(state): State<AppState>) -> Json<serde_json::Valu
                                         method_obj.insert(
                                             "example".to_string(),
                                             serde_json::json!(default_example),
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        // Also update InfoResponse.averaging example
+                        if let Some(info_response) = schemas_obj.get_mut("InfoResponse") {
+                            if let Some(props) = info_response.get_mut("properties") {
+                                if let Some(averaging) = props.get_mut("averaging") {
+                                    if let Some(averaging_obj) = averaging.as_object_mut() {
+                                        let default_example = match state.default_avg_method {
+                                            image_stats::AveragingMethod::Arithmetic => {
+                                                "arithmetic"
+                                            }
+                                            image_stats::AveragingMethod::Geometric => "geometric",
+                                        };
+                                        averaging_obj.insert(
+                                            "example".to_string(),
+                                            serde_json::json!(default_example),
+                                        );
+                                    }
+                                }
+                                // Also update InfoResponse.load_cuda example
+                                if let Some(load_cuda) = props.get_mut("load_cuda") {
+                                    if let Some(load_cuda_obj) = load_cuda.as_object_mut() {
+                                        load_cuda_obj.insert(
+                                            "example".to_string(),
+                                            serde_json::json!(state.use_gpu),
                                         );
                                     }
                                 }
