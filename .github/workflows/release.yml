@@ -75,6 +75,7 @@ jobs:
           # Build directly with docker (matching makefile approach but bypassing dependencies)
           # Both platforms use native docker build (no buildx needed)
           # CUDA feature is enabled (doesn't significantly increase binary size, allows USE_GPU=1)
+          # Note: GPU support requires CUDA 12.3+ drivers (ort 2.0.0-rc.10 uses ONNX Runtime 1.22)
           docker build --target runtime-cpu \
             --build-arg TXT_MODEL_FILE=${{ matrix.txt_model }} \
             --build-arg IMG_MODEL_FILE=${{ matrix.img_model }} \
@@ -258,4 +259,11 @@ jobs:
             - **Quantized** (`*-quantized.tar.gz`): Smaller files, faster inference, ~99% quality. Recommended for most use cases.
             - **Full** (`*-full.tar.gz`): Larger files, best quality (fp32 precision). Use for maximum accuracy.
             
-            **Note**: Linux binaries include CUDA support (built with `--features cuda`). If `USE_GPU=1` is set but CUDA libraries aren't available, ONNX Runtime will fall back to CPU automatically. For GPU support, ensure CUDA drivers and libraries are installed, or use the Docker GPU images (`mindthemath/nomic-embed-v1.5-rs:*-gpu`).
+            **GPU Support**: Linux binaries include CUDA support (built with `--features cuda`). 
+            
+            - **CUDA Version Requirement**: Requires CUDA 12.3+ drivers (uses ONNX Runtime 1.22 via `ort` 2.0.0-rc.10)
+            - **Driver Compatibility**: NVIDIA driver 545+ or 550+ recommended for CUDA 12.3+ support
+            - **Fallback**: If `USE_GPU=1` is set but CUDA libraries aren't available or driver is too old, ONNX Runtime will automatically fall back to CPU with a warning message
+            - **Docker GPU Images**: Use `mindthemath/nomic-embed-v1.5-rs:*-gpu` Docker images which include CUDA 12.3 + cuDNN 9 runtime libraries
+            
+            **For CUDA 12.2/12.1 Support**: Currently not supported due to ONNX Runtime version requirements. If you need CUDA 12.2 support, please open an issue to request a build variant using an older `ort` crate version.

@@ -145,6 +145,7 @@ use std::{
     io::Cursor,
     net::SocketAddr,
     path::{Path, PathBuf},
+    process::Command,
     sync::{Arc, Mutex},
     time::Instant,
 };
@@ -345,8 +346,7 @@ impl AppState {
                                         "Text model session created with CUDA execution provider"
                                     );
                                     // Verify CUDA actually works by running a test inference
-                                    if let Err(e) = verify_cuda_session(&mut s) {
-                                        let error_msg = e.to_string();
+                                    if let Err(error_msg) = verify_cuda_session(&mut s) {
                                         if error_msg.contains("804")
                                             || error_msg.contains("forward compatibility")
                                         {
@@ -496,8 +496,7 @@ impl AppState {
                                         "Vision model session created with CUDA execution provider"
                                     );
                                     // Verify CUDA actually works by running a test inference
-                                    if let Err(e) = verify_cuda_vision_session(&mut s) {
-                                        let error_msg = e.to_string();
+                                    if let Err(error_msg) = verify_cuda_vision_session(&mut s) {
                                         if error_msg.contains("804")
                                             || error_msg.contains("forward compatibility")
                                         {
@@ -1668,23 +1667,31 @@ async fn fetch_image_url(url: &str) -> Result<Vec<u8>, Error> {
 // CUDA Verification
 // ============================================================================
 
-/// Verify CUDA session actually works by running a minimal test inference
+/// Verify CUDA session actually works by running a test inference and checking GPU usage
 /// This catches driver compatibility issues that only appear at runtime
 #[cfg(feature = "cuda")]
-fn verify_cuda_session(session: &mut Session) -> Result<(), OrtError> {
+fn verify_cuda_session(session: &mut Session) -> Result<(), String> {
     use ort::session::{SessionInputValue, SessionInputs};
     use ort::value::Value;
 
-    // Create minimal test input - single token [101] (CLS token)
-    let test_input_shape = vec![1i64, 1i64];
-    let test_ids: Vec<i64> = vec![101]; // CLS token
-    let test_type_ids: Vec<i64> = vec![0];
-    let test_attention: Vec<i64> = vec![1];
+    // Get GPU memory before inference
+    let gpu_mem_before = get_gpu_memory_used().unwrap_or(0);
 
-    let input_ids: Value = Value::from_array((test_input_shape.clone(), test_ids))?.into();
-    let token_type_ids: Value =
-        Value::from_array((test_input_shape.clone(), test_type_ids))?.into();
-    let attention_mask: Value = Value::from_array((test_input_shape, test_attention))?.into();
+    // Create a larger test input to force GPU usage - 32 tokens
+    let test_input_shape = vec![1i64, 32i64];
+    let test_ids: Vec<i64> = vec![101; 32]; // CLS token repeated
+    let test_type_ids: Vec<i64> = vec![0; 32];
+    let test_attention: Vec<i64> = vec![1; 32];
+
+    let input_ids: Value = Value::from_array((test_input_shape.clone(), test_ids))
+        .map_err(|e: OrtError| e.to_string())
+        .map(|v| v.into())?;
+    let token_type_ids: Value = Value::from_array((test_input_shape.clone(), test_type_ids))
+        .map_err(|e: OrtError| e.to_string())
+        .map(|v| v.into())?;
+    let attention_mask: Value = Value::from_array((test_input_shape, test_attention))
+        .map_err(|e: OrtError| e.to_string())
+        .map(|v| v.into())?;
 
     let test_inputs = vec![
         ("input_ids".to_string(), SessionInputValue::from(input_ids)),
@@ -1699,38 +1706,122 @@ fn verify_cuda_session(session: &mut Session) -> Result<(), OrtError> {
     ];
 
     // Try to run inference - this will fail if CUDA can't actually be used
-    session.run(SessionInputs::from(test_inputs))?;
+    match session.run(SessionInputs::from(test_inputs)) {
+        Ok(_) => {}
+        Err(e) => return Err(e.to_string()),
+    }
+
+    // Check GPU memory after - if it increased significantly, GPU is being used
+    let gpu_mem_after = get_gpu_memory_used().unwrap_or(0);
+    let memory_increase = if gpu_mem_after > gpu_mem_before {
+        gpu_mem_after - gpu_mem_before
+    } else {
+        0
+    };
+
+    // Require at least 10 MiB increase to confirm GPU usage (small increases might be noise)
+    if memory_increase >= 10 {
+        info!(
+            "GPU memory increased from {} MiB to {} MiB (+{} MiB) - CUDA is active",
+            gpu_mem_before, gpu_mem_after, memory_increase
+        );
+        Ok(())
+    } else if gpu_mem_before > 0 {
+        // GPU memory exists but didn't increase meaningfully - likely using CPU
+        // Return error to trigger fallback
+        Err(format!(
+            "CUDA session created but GPU memory unchanged ({} MiB -> {} MiB, +{} MiB). ONNX Runtime is likely using CPU. This may indicate driver compatibility issues.",
+            gpu_mem_before, gpu_mem_after, memory_increase
+        ))
+    } else {
+        // Can't check GPU memory (nvidia-smi not available) - assume it works
+        // This allows Docker environments where nvidia-smi might not be accessible
+        warn!("Cannot verify GPU memory usage (nvidia-smi unavailable). Assuming CUDA is active.");
+        Ok(())
+    }
+}
+
+/// Get current GPU memory usage in MiB
+#[cfg(feature = "cuda")]
+fn get_gpu_memory_used() -> Option<u64> {
+    let output = Command::new("nvidia-smi")
+        .args(&["--query-gpu=memory.used", "--format=csv,noheader,nounits"])
+        .output()
+        .ok()?;
+
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    stdout.trim().parse::<u64>().ok()
+}
+
+#[cfg(not(feature = "cuda"))]
+fn verify_cuda_session(_session: &mut Session) -> Result<(), String> {
     Ok(())
 }
 
 #[cfg(not(feature = "cuda"))]
-fn verify_cuda_session(_session: &mut Session) -> Result<(), OrtError> {
-    Ok(())
+fn get_gpu_memory_used() -> Option<u64> {
+    None
 }
 
-/// Verify CUDA vision session actually works by running a minimal test inference
+/// Verify CUDA vision session actually works by running a test inference and checking GPU usage
 #[cfg(feature = "cuda")]
-fn verify_cuda_vision_session(session: &mut Session) -> Result<(), OrtError> {
+fn verify_cuda_vision_session(session: &mut Session) -> Result<(), String> {
     use ort::session::{SessionInputValue, SessionInputs};
     use ort::value::Value;
 
-    // Create minimal test input - 1x3x224x224 (all zeros)
+    // Get GPU memory before inference
+    let gpu_mem_before = get_gpu_memory_used().unwrap_or(0);
+
+    // Create test input - 1x3x224x224 (all zeros)
     let test_input_shape = vec![1i64, 3, IMAGE_SIZE as i64, IMAGE_SIZE as i64];
     let test_pixels: Vec<f32> = vec![0.0; 3 * IMAGE_SIZE * IMAGE_SIZE];
 
-    let pixel_values: Value = Value::from_array((test_input_shape, test_pixels))?.into();
+    let pixel_values: Value = Value::from_array((test_input_shape, test_pixels))
+        .map_err(|e: OrtError| e.to_string())
+        .map(|v| v.into())?;
     let test_inputs = vec![(
         "pixel_values".to_string(),
         SessionInputValue::from(pixel_values),
     )];
 
     // Try to run inference - this will fail if CUDA can't actually be used
-    session.run(SessionInputs::from(test_inputs))?;
-    Ok(())
+    match session.run(SessionInputs::from(test_inputs)) {
+        Ok(_) => {}
+        Err(e) => return Err(e.to_string()),
+    }
+
+    // Check GPU memory after - if it increased significantly, GPU is being used
+    let gpu_mem_after = get_gpu_memory_used().unwrap_or(0);
+    let memory_increase = if gpu_mem_after > gpu_mem_before {
+        gpu_mem_after - gpu_mem_before
+    } else {
+        0
+    };
+
+    // Require at least 10 MiB increase to confirm GPU usage (small increases might be noise)
+    if memory_increase >= 10 {
+        info!(
+            "GPU memory increased from {} MiB to {} MiB (+{} MiB) - CUDA is active",
+            gpu_mem_before, gpu_mem_after, memory_increase
+        );
+        Ok(())
+    } else if gpu_mem_before > 0 {
+        // GPU memory exists but didn't increase meaningfully - likely using CPU
+        // Return error to trigger fallback
+        Err(format!(
+            "CUDA session created but GPU memory unchanged ({} MiB -> {} MiB, +{} MiB). ONNX Runtime is likely using CPU. This may indicate driver compatibility issues.",
+            gpu_mem_before, gpu_mem_after, memory_increase
+        ))
+    } else {
+        // Can't check GPU memory (nvidia-smi not available) - assume it works
+        // This allows Docker environments where nvidia-smi might not be accessible
+        warn!("Cannot verify GPU memory usage (nvidia-smi unavailable). Assuming CUDA is active.");
+        Ok(())
+    }
 }
 
 #[cfg(not(feature = "cuda"))]
-fn verify_cuda_vision_session(_session: &mut Session) -> Result<(), OrtError> {
+fn verify_cuda_vision_session(_session: &mut Session) -> Result<(), String> {
     Ok(())
 }
 
