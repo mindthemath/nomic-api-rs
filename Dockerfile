@@ -8,15 +8,15 @@
 # Use Ubuntu 22.04 base to match runtime GLIBC version
 FROM ubuntu:22.04 AS builder
 
-# Install Rust and build dependencies
-# Use rustup to install Rust (matches rust:1.92.0 version)
+# Install Rust and build dependencies  
+# Use Rust nightly to support edition2024 (required by dependencies)
 RUN apt-get update && apt-get install -y \
     curl \
     pkg-config \
     libssl-dev \
     ca-certificates \
     build-essential \
-    && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.92.0 \
+    && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain nightly \
     && rm -rf /var/lib/apt/lists/*
 ENV PATH="/root/.cargo/bin:${PATH}"
 
@@ -25,14 +25,46 @@ WORKDIR /build
 # Copy dependency files
 COPY Cargo.toml Cargo.lock ./
 
+# Patch Cargo.toml to use ort 2.0.0-rc.2 for CUDA 11.8 compatibility
+RUN sed -i 's|version = "2\.0\.0-rc\.10"|version = "2.0.0-rc.2"|' Cargo.toml && \
+    sed -i 's|version = "2\.0\.0-rc\.2"|version = "2.0.0-rc.2"|' Cargo.toml && \
+    sed -i 's|download-binaries|load-dynamic|' Cargo.toml && \
+    echo "✓ Patched Cargo.toml to use ort 2.0.0-rc.2 with load-dynamic"
+
+# Download ONNX Runtime 1.18.1 (CUDA 11.x build)
+# This version supports IR 10 (required by models) and works with CUDA 11.8 drivers
+# Compatible with NVIDIA driver 535+ (CUDA 11.8)
+# Note: The build without "cuda12" suffix is the CUDA 11.x build
+RUN mkdir -p /build/ort-cuda-11-8 && \
+    cd /build/ort-cuda-11-8 && \
+    curl -L -o onnxruntime-linux-x64-gpu-1.18.1.tgz \
+        https://github.com/microsoft/onnxruntime/releases/download/v1.18.1/onnxruntime-linux-x64-gpu-1.18.1.tgz && \
+    tar -xzf onnxruntime-linux-x64-gpu-1.18.1.tgz
+
+# Find ONNX Runtime library and set environment variables
+RUN ORT_LIB=$(find /build/ort-cuda-11-8/onnxruntime-linux-x64-gpu-1.18.1/lib -name "libonnxruntime.so*" -type f | head -1) && \
+    ORT_LIB_REAL=$(readlink -f "$ORT_LIB" 2>/dev/null || echo "$ORT_LIB") && \
+    echo "$ORT_LIB_REAL" > /build/ort-lib-path.txt && \
+    echo "$(dirname $ORT_LIB_REAL)" > /build/ort-lib-dir.txt
+
 # Create a dummy src to build dependencies
 RUN mkdir -p src static/swagger-ui && \
     echo "fn main() {}" > src/main.rs && \
     echo "<!-- placeholder -->" > static/swagger-ui/index.html
 
 # Build dependencies (cached layer)
-# Enable cuda feature for Linux builds (ONNX Runtime will use GPU if available, falls back to CPU)
-RUN cargo build --release --features cuda && rm -rf src static
+# Enable cuda-12-2 feature with load-dynamic, using ONNX Runtime 1.18.1 (CUDA 11.x build)
+# Note: cuda-12-2 feature uses ort rc.2 API (compatible with CUDA 11.8 ONNX Runtime)
+# Remove Cargo.lock to force regeneration with rc2
+# Update BOTH ort and ort-sys to rc2
+# Note: ort rc2 expects 1.17.x but we use 1.18.1 for IR 10 support (version check happens at runtime)
+RUN rm -f Cargo.lock && \
+    cargo update -p ort --precise 2.0.0-rc.2 && \
+    cargo update -p ort-sys --precise 2.0.0-rc.2 && \
+    ORT_DYLIB_PATH=$(cat /build/ort-lib-path.txt) && \
+    LD_LIBRARY_PATH=$(cat /build/ort-lib-dir.txt):$LD_LIBRARY_PATH && \
+    export ORT_DYLIB_PATH LD_LIBRARY_PATH && \
+    cargo build --release --features cuda-12-2 && rm -rf src static
 
 # Copy source code and static files (needed for include_str! at compile time)
 COPY src ./src
@@ -40,13 +72,18 @@ COPY static ./static
 
 # Build the actual binary
 # Touch source files to ensure cargo sees them as newer than cached artifacts
-RUN touch src/main.rs && cargo build --release --features cuda
+# Use ONNX Runtime 1.18.1 (CUDA 11.x build) via ORT_DYLIB_PATH
+# Note: Using cuda-12-2 feature for rc.2 API compatibility (works with CUDA 11.8)
+RUN ORT_DYLIB_PATH=$(cat /build/ort-lib-path.txt) && \
+    LD_LIBRARY_PATH=$(cat /build/ort-lib-dir.txt):$LD_LIBRARY_PATH && \
+    export ORT_DYLIB_PATH LD_LIBRARY_PATH && \
+    touch src/main.rs && \
+    cargo build --release --features cuda-12-2
 
 # Prepare ONNX Runtime libraries for copying to runtime stage
-# Copy libraries to a known location so we can reliably copy them later
+# Copy libraries from downloaded ONNX Runtime 1.18.1 (CUDA 11.x build)
 RUN mkdir -p /build/app/lib && \
-    (find /root/.cache/ort.pyke.io -name "libonnxruntime_providers*.so*" -exec cp -L {} /build/app/lib/ \; 2>/dev/null || true) && \
-    (find /build/target/release/deps -name "libonnxruntime_providers*.so*" -type l -exec sh -c 'cp -L "$$1" /build/app/lib/ 2>/dev/null || true' _ {} \; || true) && \
+    find /build/ort-cuda-11-8/onnxruntime-linux-x64-gpu-1.18.1/lib -name "*.so*" -exec cp -L {} /build/app/lib/ \; 2>/dev/null || true && \
     touch /build/app/lib/.keep  # Ensure directory exists even if no libraries found
 
 # ============================================================================
@@ -97,9 +134,9 @@ CMD ["./nomic-serve"]
 # ============================================================================
 # Stage 3: GPU Runtime (CUDA)
 # ============================================================================
-# ONNX Runtime CUDA provider requires cuDNN 9, which needs CUDA 12.3+
-# CUDA 12.3 works with driver 535+ via forward compatibility
-FROM nvidia/cuda:12.3.2-cudnn9-runtime-ubuntu22.04 AS runtime-gpu
+# ONNX Runtime CUDA provider for CUDA 11.8
+# CUDA 11.8 works with driver 535+ (compatible with older drivers)
+FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04 AS runtime-gpu
 
 # Build arguments for model selection
 # Default to quantized models for smaller image size

@@ -16,8 +16,8 @@ hex           = "0.4"
 image         = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
 kamadak-exif  = "0.5"
 ndarray       = "0.16"
-# ort version selection: use cuda-12-2 feature for CUDA 12.1/12.2 compatibility
-ort           = { version = "2.0.0-rc.10", default-features = false, features = ["ndarray", "half", "download-binaries"] }
+# ort version selection: default is rc10, patched to rc2 for cuda-12-2 builds in makefile
+ort = { version = "2.0.0-rc.2", default-features = false, features = ["ndarray", "half", "load-dynamic"] }
 reqwest       = { version = "0.12", default-features = false, features = ["rustls-tls", "trust-dns"] }
 serde         = { version = "1", features = ["derive"] }
 serde_json    = "1"

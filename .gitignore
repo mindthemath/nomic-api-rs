@@ -30,4 +30,4 @@ models/
 test_images/
 results/
 *.tar.gz
-
+.ort-cuda*

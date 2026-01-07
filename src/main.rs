@@ -30,6 +30,9 @@ use axum::{
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use image::{DynamicImage, ImageReader};
 use ndarray::ShapeError;
+// ort rc2 has different module structure - try root-level imports
+// If building with cuda-12-2 feature, ort rc2 is used which has different API
+#[cfg(not(feature = "cuda-12-2"))]
 use ort::{
     session::{
         builder::{GraphOptimizationLevel, SessionBuilder},
@@ -39,8 +42,18 @@ use ort::{
     Error as OrtError,
 };
 
-#[cfg(any(feature = "cuda", feature = "cuda-12-2"))]
+// For ort rc2, items are re-exported at root level
+#[cfg(feature = "cuda-12-2")]
+use ort::{
+    Error as OrtError, GraphOptimizationLevel, Session, SessionBuilder, SessionInputValue,
+    SessionInputs, Value,
+};
+
+#[cfg(all(feature = "cuda", not(feature = "cuda-12-2")))]
 use ort::execution_providers::CUDAExecutionProvider;
+
+#[cfg(feature = "cuda-12-2")]
+use ort::CUDAExecutionProvider;
 
 // Check if CUDA feature is compiled in
 #[cfg(any(feature = "cuda", feature = "cuda-12-2"))]
@@ -1711,8 +1724,12 @@ async fn fetch_image_url(url: &str) -> Result<Vec<u8>, Error> {
 /// This catches driver compatibility issues that only appear at runtime
 #[cfg(any(feature = "cuda", feature = "cuda-12-2"))]
 fn verify_cuda_session(session: &mut Session) -> Result<(), String> {
+    #[cfg(not(feature = "cuda-12-2"))]
     use ort::session::{SessionInputValue, SessionInputs};
+    #[cfg(not(feature = "cuda-12-2"))]
     use ort::value::Value;
+    #[cfg(feature = "cuda-12-2")]
+    use ort::{SessionInputValue, SessionInputs, Value};
 
     // Get GPU memory before inference
     let gpu_mem_before = get_gpu_memory_used().unwrap_or(0);
@@ -1808,8 +1825,12 @@ fn get_gpu_memory_used() -> Option<u64> {
 /// Verify CUDA vision session actually works by running a test inference and checking GPU usage
 #[cfg(any(feature = "cuda", feature = "cuda-12-2"))]
 fn verify_cuda_vision_session(session: &mut Session) -> Result<(), String> {
+    #[cfg(not(feature = "cuda-12-2"))]
     use ort::session::{SessionInputValue, SessionInputs};
+    #[cfg(not(feature = "cuda-12-2"))]
     use ort::value::Value;
+    #[cfg(feature = "cuda-12-2")]
+    use ort::{SessionInputValue, SessionInputs, Value};
 
     // Get GPU memory before inference
     let gpu_mem_before = get_gpu_memory_used().unwrap_or(0);
@@ -1943,10 +1964,19 @@ fn embed_text(state: &TextState, text: &str) -> Result<(Vec<f32>, usize), Error>
     let outputs = session_guard.run(SessionInputs::from(inputs_vec))?;
     let inference_time = inference_start.elapsed();
 
+    // ort rc2 returns array directly, rc10 returns (shape, array) tuple
+    #[cfg(not(feature = "cuda-12-2"))]
     let (output_shape, raw_embedding) = outputs[0].try_extract_tensor::<f32>()?.to_owned();
+    #[cfg(feature = "cuda-12-2")]
+    let raw_embedding = outputs[0].try_extract_tensor::<f32>()?.to_owned();
+    #[cfg(feature = "cuda-12-2")]
+    let output_shape = raw_embedding.shape().to_vec();
 
     let postprocess_start = Instant::now();
+    #[cfg(not(feature = "cuda-12-2"))]
     let embedding_vec = raw_embedding.to_vec();
+    #[cfg(feature = "cuda-12-2")]
+    let embedding_vec: Vec<f32> = raw_embedding.iter().cloned().collect();
     let shape_dims: Vec<usize> = output_shape.iter().map(|&d| d as usize).collect();
 
     let mut embedding = match shape_dims.as_slice() {
@@ -2068,9 +2098,18 @@ fn embed_image(state: &VisionState, image: &DynamicImage) -> Result<Vec<f32>, Er
         preprocess_time.as_secs_f64() * 1000.0,
         inference_time.as_secs_f64() * 1000.0
     );
+    // ort rc2 returns array directly, rc10 returns (shape, array) tuple
+    #[cfg(not(feature = "cuda-12-2"))]
     let (output_shape, raw_output) = outputs[0].try_extract_tensor::<f32>()?.to_owned();
+    #[cfg(feature = "cuda-12-2")]
+    let raw_output = outputs[0].try_extract_tensor::<f32>()?.to_owned();
+    #[cfg(feature = "cuda-12-2")]
+    let output_shape = raw_output.shape().to_vec();
 
+    #[cfg(not(feature = "cuda-12-2"))]
     let output_vec = raw_output.to_vec();
+    #[cfg(feature = "cuda-12-2")]
+    let output_vec: Vec<f32> = raw_output.iter().cloned().collect();
     let shape_dims: Vec<usize> = output_shape.iter().map(|&d| d as usize).collect();
 
     // Extract CLS token (first token) from [batch, num_tokens, hidden_dim]
