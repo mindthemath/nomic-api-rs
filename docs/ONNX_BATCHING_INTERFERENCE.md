@@ -64,12 +64,22 @@ Self-attention computes relationships between tokens. In batches:
 
 ## Why PyTorch Doesn't Show Interference
 
-The PyTorch/transformers implementation shows **zero interference** (cosine similarity = 1.0) because:
+The PyTorch/transformers implementation shows **zero or negligible interference** (cosine similarity ≥99.99%) because:
 
 1. **No graph optimizations**: PyTorch executes operations as written, without aggressive fusion
-2. **Consistent numerical precision**: Uses FP32 consistently, no dynamic quantization
+2. **Consistent numerical precision**: Uses FP32/FP16/BF16 consistently, no dynamic quantization
 3. **Per-sample processing**: Each sample in batch processed independently at the operation level
 4. **No ONNX Runtime**: Direct PyTorch execution avoids ONNX Runtime's optimizations
+
+### Half-Precision (FP16/BF16) Results
+
+Testing PyTorch with half-precision shows:
+- **FP16**: 0.000000-0.000221 max diff, 99.9999-100% cosine similarity (excellent)
+- **BF16**: 0.000000-0.001940 max diff, 99.9938-100% cosine similarity (excellent)
+
+**Key finding**: PyTorch half-precision (FP16/BF16) does **NOT** show the severe interference of ONNX INT8 quantization. The differences are negligible compared to ONNX INT8's ~0.5 diff.
+
+This suggests the issue is specific to **ONNX Runtime's INT8 quantization implementation**, not half-precision arithmetic in general.
 
 ## Quantized vs FP32 Comparison
 
@@ -116,6 +126,16 @@ The text model is **much more sensitive to quantization** than the vision model:
 3. **Unusable for production**: The interference is too severe
 
 **Recommendation**: **DO NOT batch text model with quantized ONNX**. Use FP32 model for batching, or process sequentially (batch_size=1).
+
+### Text Model (PyTorch Half-Precision)
+
+**Yes, acceptable** for batching:
+
+1. **99.99%+ cosine similarity**: Embeddings remain very similar
+2. **FP16**: 0.000000-0.000221 max diff (negligible)
+3. **BF16**: 0.000000-0.001940 max diff (very small)
+
+**Recommendation**: PyTorch FP16/BF16 can safely batch text model. Much better than ONNX INT8.
 
 ### When It Might Matter
 
