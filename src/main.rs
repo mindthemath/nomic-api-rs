@@ -340,13 +340,53 @@ impl AppState {
                         .with_execution_providers([CUDAExecutionProvider::default().build()])
                     {
                         Ok(cuda_builder) => {
+                            // Get GPU memory before model loading (150+ MB model should allocate on GPU)
+                            let gpu_mem_before_load = get_gpu_memory_used().unwrap_or(0);
+
                             match cuda_builder.commit_from_memory(&model_bytes) {
                                 Ok(mut s) => {
+                                    // Check GPU memory immediately after model loading
+                                    let gpu_mem_after_load = get_gpu_memory_used().unwrap_or(0);
+                                    let model_memory_increase =
+                                        if gpu_mem_after_load > gpu_mem_before_load {
+                                            gpu_mem_after_load - gpu_mem_before_load
+                                        } else {
+                                            0
+                                        };
+
                                     info!(
-                                        "Text model session created with CUDA execution provider"
+                                        "Text model session created with CUDA execution provider (GPU mem: {} -> {} MiB, +{} MiB)",
+                                        gpu_mem_before_load, gpu_mem_after_load, model_memory_increase
                                     );
-                                    // Verify CUDA actually works by running a test inference
-                                    if let Err(error_msg) = verify_cuda_session(&mut s) {
+
+                                    // If model loading didn't allocate GPU memory (150+ MB model should allocate at least 50+ MB),
+                                    // ONNX Runtime is silently using CPU despite claiming CUDA session
+                                    if gpu_mem_before_load > 0 && model_memory_increase < 50 {
+                                        warn!("Model loaded but GPU memory only increased by {} MiB (expected 50+ MB for 150+ MB model).", model_memory_increase);
+                                        warn!("ONNX Runtime is likely using CPU despite CUDA session creation.");
+                                        warn!("This likely means ONNX Runtime was compiled for CUDA 12.3+ but your driver only supports CUDA 12.2.");
+                                        warn!("Falling back to CPU.");
+                                        // Retry without CUDA
+                                        let cpu_builder = SessionBuilder::new()
+                                            .map_err(|e| {
+                                                anyhow::anyhow!(
+                                                    "Failed to create session builder: {}",
+                                                    e
+                                                )
+                                            })?
+                                            .with_optimization_level(GraphOptimizationLevel::Level3)
+                                            .map_err(|e| {
+                                                anyhow::anyhow!(
+                                                    "Failed to set optimization level: {}",
+                                                    e
+                                                )
+                                            })?;
+                                        let s =
+                                            cpu_builder.commit_from_memory(&model_bytes).map_err(
+                                                |e| anyhow::anyhow!("Failed to load model: {}", e),
+                                            )?;
+                                        (s, false)
+                                    } else if let Err(error_msg) = verify_cuda_session(&mut s) {
                                         if error_msg.contains("804")
                                             || error_msg.contains("forward compatibility")
                                         {
@@ -1677,11 +1717,12 @@ fn verify_cuda_session(session: &mut Session) -> Result<(), String> {
     // Get GPU memory before inference
     let gpu_mem_before = get_gpu_memory_used().unwrap_or(0);
 
-    // Create a larger test input to force GPU usage - 32 tokens
-    let test_input_shape = vec![1i64, 32i64];
-    let test_ids: Vec<i64> = vec![101; 32]; // CLS token repeated
-    let test_type_ids: Vec<i64> = vec![0; 32];
-    let test_attention: Vec<i64> = vec![1; 32];
+    // Create a larger test input to force GPU usage - 512 tokens (full sequence length)
+    // This should force ONNX Runtime to allocate model weights on GPU if it's actually using CUDA
+    let test_input_shape = vec![1i64, 512i64];
+    let test_ids: Vec<i64> = vec![101; 512]; // CLS token repeated
+    let test_type_ids: Vec<i64> = vec![0; 512];
+    let test_attention: Vec<i64> = vec![1; 512];
 
     let input_ids: Value = Value::from_array((test_input_shape.clone(), test_ids))
         .map_err(|e: OrtError| e.to_string())
@@ -1719,8 +1760,9 @@ fn verify_cuda_session(session: &mut Session) -> Result<(), String> {
         0
     };
 
-    // Require at least 10 MiB increase to confirm GPU usage (small increases might be noise)
-    if memory_increase >= 10 {
+    // Require at least 50 MiB increase to confirm GPU usage (150+ MB model should allocate at least 50+ MB on GPU)
+    // Small increases (1-20 MiB) are likely noise or CPU memory
+    if memory_increase >= 50 {
         info!(
             "GPU memory increased from {} MiB to {} MiB (+{} MiB) - CUDA is active",
             gpu_mem_before, gpu_mem_after, memory_increase
@@ -1798,8 +1840,9 @@ fn verify_cuda_vision_session(session: &mut Session) -> Result<(), String> {
         0
     };
 
-    // Require at least 10 MiB increase to confirm GPU usage (small increases might be noise)
-    if memory_increase >= 10 {
+    // Require at least 50 MiB increase to confirm GPU usage (150+ MB model should allocate at least 50+ MB on GPU)
+    // Small increases (1-20 MiB) are likely noise or CPU memory
+    if memory_increase >= 50 {
         info!(
             "GPU memory increased from {} MiB to {} MiB (+{} MiB) - CUDA is active",
             gpu_mem_before, gpu_mem_after, memory_increase
