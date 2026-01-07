@@ -92,7 +92,9 @@ CMD ["./nomic-serve"]
 # ============================================================================
 # Stage 3: GPU Runtime (CUDA)
 # ============================================================================
-FROM nvidia/cuda:12.1.0-runtime-ubuntu22.04 AS runtime-gpu
+# ONNX Runtime CUDA provider requires cuDNN 9, which needs CUDA 12.3+
+# CUDA 12.3 works with driver 535+ via forward compatibility
+FROM nvidia/cuda:12.3.2-cudnn9-runtime-ubuntu22.04 AS runtime-gpu
 
 # Build arguments for model selection
 # Default to quantized models for smaller image size
