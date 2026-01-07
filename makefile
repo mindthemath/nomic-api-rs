@@ -7,7 +7,8 @@ default: run
 .PHONY: model fmt build clean run health docs openapi test test-list test-dim models-all test-models \
         docker-build docker-build-cpu docker-push docker-push-cpu \
         model-txt model-txt-all model-img model-img-all check-txt check-img check-models \
-        test-img test-img-batch test-multimodal test-img-stats run-stats
+        test-img test-img-batch test-multimodal test-img-stats run-stats \
+        test-vision-batch benchmark-vision-batch benchmark-vision-batch-gpu benchmark-throughput
 
 # ==============================================================================
 # Model Files
@@ -196,6 +197,27 @@ test-img-stats-arithmetic:
 test-img-stats-validate:
 	@echo "Validating Rust /img/stats against Python reference..."
 	@cd scripts && time python3 test_image_stats.py --rust-url http://localhost:8080 --count 100 --seed 1231 --tidy --paged
+
+# Test vision model batching safety (check for cross-sample interference)
+test-vision-batch:
+	@echo "Testing vision model batching for cross-sample interference..."
+	@cd scripts && python3 test_vision_batch_interference.py
+
+# Benchmark vision model batching performance
+benchmark-vision-batch:
+	@echo "Benchmarking vision model with different batch sizes..."
+	@cd scripts && python3 benchmark_vision_batching.py
+
+# Benchmark vision model on GPU (if available)
+benchmark-vision-batch-gpu:
+	@echo "Benchmarking vision model on GPU with different batch sizes..."
+	@cd scripts && python3 benchmark_vision_batching.py --gpu
+
+# Benchmark API server throughput
+benchmark-throughput:
+	@echo "Benchmarking API server throughput..."
+	@echo "Make sure server is running: make run"
+	@cd scripts && python3 benchmark_throughput.py
 
 # ==============================================================================
 # Test - Multimodal
