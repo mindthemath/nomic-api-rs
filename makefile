@@ -70,17 +70,22 @@ fmt:
 	cargo fmt
 
 target/release/nomic-serve: src/main.rs Cargo.toml static/swagger-ui/index.html
-	cargo build --release
+	cargo build --release --features ort-rc2-api
 
-build: fmt target/release/nomic-serve
-	@echo "✓ Build complete (CPU only)"
+build: fmt
+	@# Ensure ort is rc.2 (compatible with ONNX Runtime 1.18.1)
+	@# Use ort-rc2-api feature to get rc.2 API style (no CUDA code compiled)
+	@cargo update -p ort --precise 2.0.0-rc.2
+	@cargo update -p ort-sys --precise 2.0.0-rc.2
+	cargo build --release --features ort-rc2-api
+	@echo "✓ Build complete (CPU only, using ort rc.2 API)"
 
 # Build with CUDA support (Linux only, requires NVIDIA drivers)
 build-cuda: fmt
 	cargo build --release --features cuda
 	@echo "✓ Build complete (with CUDA support)"
 
-# Build with CUDA 12.2 support - see build-cuda-12-2 target below (after ONNX Runtime setup)
+# Build with CUDA 12.2 support - see build-cuda-legacy target below (after ONNX Runtime setup)
 
 check:
 	@cargo check
@@ -111,24 +116,26 @@ clean-results:
 	esac
 
 # ==============================================================================
-# ONNX Runtime for CUDA 12.2
+# ONNX Runtime for CPU and CUDA
 # ==============================================================================
 
 # Directory for downloaded ONNX Runtime
-ORT_CUDA_12_2_DIR := $(shell pwd)/.ort-cuda-12-2
+ORT_CUDA_12_2_DIR := $(shell pwd)/.ort-cuda-legacy
+ORT_CPU_DIR := $(shell pwd)/.ort-cpu
 
 # Use Python's onnxruntime-gpu libraries (if installed)
 # Note: Python package embeds the main library, so we use the downloaded Microsoft release instead
 setup-ort-python:
 	@echo "⚠️  Python onnxruntime embeds the main library in the Python extension."
 	@echo "   Using downloaded Microsoft release instead (recommended)."
-	@echo "   Run: make download-ort-cuda-12-2"
+	@echo "   Run: make download-ort-cuda-legacy"
 	@exit 1
 
-# Download Microsoft's ONNX Runtime 1.17.3 (supports CUDA 12.2, compatible with ort 2.0.0-rc.2)
+# Download Microsoft's ONNX Runtime 1.17.3 (supports CUDA 11.8+, compatible with ort 2.0.0-rc.2)
+# Note: For local builds, 1.17.3 works. Docker uses 1.18.1 for IR 10 support.
 # Release: https://github.com/microsoft/onnxruntime/releases/tag/v1.17.3
-download-ort-cuda-12-2:
-	@echo "Downloading ONNX Runtime 1.17.3 for CUDA 12.2 (compatible with ort 2.0.0-rc.2)..."
+download-ort-cuda-legacy:
+	@echo "Downloading ONNX Runtime 1.17.3 for CUDA 11.8+ (compatible with ort 2.0.0-rc.2)..."
 	@mkdir -p $(ORT_CUDA_12_2_DIR)
 	@cd $(ORT_CUDA_12_2_DIR) && \
 	if [ ! -f "onnxruntime-linux-x64-gpu-1.17.3.tgz" ]; then \
@@ -162,50 +169,90 @@ download-ort-cuda-12-2:
 	echo "   Source it with: source .ort-env.sh"
 
 # Auto-setup: download Microsoft release (recommended)
-setup-ort-cuda-12-2: download-ort-cuda-12-2
+setup-ort-cuda-legacy: download-ort-cuda-legacy
 
-# Build with CUDA 12.2 support (uses ort 2.0.0-rc.2 + ONNX Runtime 1.17.3)
-build-cuda-12-2: fmt
-	@# Patch Cargo.toml to use ort 2.0.0-rc.2 for CUDA 12.2 compatibility
+# Build with CUDA 11.8+ support (uses ort 2.0.0-rc.2 + ONNX Runtime 1.17.3)
+build-cuda-legacy: fmt
+	@# Patch Cargo.toml to use ort 2.0.0-rc.2 for CUDA 11.8+ compatibility
 	@sed -i.bak 's|version = "2\.0\.0-rc\.10"|version = "2.0.0-rc.2"|' Cargo.toml
 	@if [ -f "$(shell pwd)/.ort-env.sh" ]; then \
 		echo "Loading ORT_DYLIB_PATH from .ort-env.sh..."; \
 		export $$(grep -v '^#' $(shell pwd)/.ort-env.sh | xargs); \
 	fi; \
 	if [ -z "$$ORT_DYLIB_PATH" ]; then \
-		echo "❌ ORT_DYLIB_PATH not set. Run: make download-ort-cuda-12-2"; \
+		echo "❌ ORT_DYLIB_PATH not set. Run: make download-ort-cuda-legacy"; \
 		mv Cargo.toml.bak Cargo.toml 2>/dev/null || true; \
 		exit 1; \
 	fi; \
 	if [ ! -f "$$ORT_DYLIB_PATH" ]; then \
 		echo "❌ ORT_DYLIB_PATH points to non-existent file: $$ORT_DYLIB_PATH"; \
-		echo "   Run: make download-ort-cuda-12-2"; \
+		echo "   Run: make download-ort-cuda-legacy"; \
 		mv Cargo.toml.bak Cargo.toml 2>/dev/null || true; \
 		exit 1; \
 	fi; \
 	echo "✓ Using ONNX Runtime 1.17.3 from: $$ORT_DYLIB_PATH"; \
 	rm -f Cargo.lock; \
-	ORT_DYLIB_PATH=$$ORT_DYLIB_PATH LD_LIBRARY_PATH=$$LD_LIBRARY_PATH cargo build --release --features cuda-12-2 || (mv Cargo.toml.bak Cargo.toml 2>/dev/null || true; exit 1); \
+	ORT_DYLIB_PATH=$$ORT_DYLIB_PATH LD_LIBRARY_PATH=$$LD_LIBRARY_PATH cargo build --release --features cuda-legacy || (mv Cargo.toml.bak Cargo.toml 2>/dev/null || true; exit 1); \
 	mv Cargo.toml.bak Cargo.toml 2>/dev/null || true
-	@echo "✓ Build complete (with CUDA 12.2 support, using ort 2.0.0-rc.2 + ONNX Runtime 1.17.3)"
+	@echo "✓ Build complete (with CUDA 11.8+ support, using ort 2.0.0-rc.2 + ONNX Runtime 1.17.3)"
 
-# Run with CUDA 12.2 (auto-loads .ort-env.sh)
-run-gpu: build-cuda-12-2 check-models
+# Run with CUDA 11.8+ (auto-loads .ort-env.sh)
+run-gpu: build-cuda-legacy check-models
 	@if [ -f "$(shell pwd)/.ort-env.sh" ]; then \
 		export $$(grep -v '^#' $(shell pwd)/.ort-env.sh | xargs); \
 	fi; \
 	USE_GPU=1 ORT_DYLIB_PATH=$$ORT_DYLIB_PATH LD_LIBRARY_PATH=$$LD_LIBRARY_PATH ./target/release/nomic-serve
 
+# Download CPU ONNX Runtime 1.18.1 (for local CPU builds)
+download-ort-cpu:
+	@echo "Downloading ONNX Runtime 1.18.1 for CPU (supports IR 10)..."
+	@mkdir -p $(ORT_CPU_DIR)
+	@cd $(ORT_CPU_DIR) && \
+	if [ ! -f "onnxruntime-linux-x64-1.18.1.tgz" ]; then \
+		echo "Downloading from GitHub releases..."; \
+		curl -L -o onnxruntime-linux-x64-1.18.1.tgz \
+			https://github.com/microsoft/onnxruntime/releases/download/v1.18.1/onnxruntime-linux-x64-1.18.1.tgz; \
+	fi
+	@cd $(ORT_CPU_DIR) && \
+	if [ ! -d "onnxruntime-linux-x64-1.18.1" ]; then \
+		echo "Extracting..."; \
+		tar -xzf onnxruntime-linux-x64-1.18.1.tgz || \
+		(echo "❌ Extraction failed. File may be corrupted. Removing..." && \
+		 rm -f onnxruntime-linux-x64-1.18.1.tgz && exit 1); \
+	fi
+	@ORT_LIB=$$(find $(ORT_CPU_DIR)/onnxruntime-linux-x64-1.18.1/lib -name "libonnxruntime.so*" -type f | grep -E "(libonnxruntime\.so\.|libonnxruntime\.so$$)" | head -1); \
+	if [ -z "$$ORT_LIB" ]; then \
+		echo "❌ Could not find libonnxruntime.so in extracted archive"; \
+		echo "   Contents of lib/:"; \
+		ls -la $(ORT_CPU_DIR)/onnxruntime-linux-x64-1.18.1/lib/ 2>/dev/null || true; \
+		exit 1; \
+	fi; \
+	ORT_LIB_REAL=$$(readlink -f "$$ORT_LIB" 2>/dev/null || echo "$$ORT_LIB"); \
+	echo "✓ Found ONNX Runtime library at: $$ORT_LIB_REAL"; \
+	echo "export ORT_DYLIB_PATH=$$ORT_LIB_REAL" > .ort-env-cpu.sh; \
+	echo "export LD_LIBRARY_PATH=$$(dirname $$ORT_LIB_REAL):\$$LD_LIBRARY_PATH" >> .ort-env-cpu.sh; \
+	echo "✓ Created .ort-env-cpu.sh with ORT_DYLIB_PATH and LD_LIBRARY_PATH"; \
+	echo "   Source it with: source .ort-env-cpu.sh"
+
 # Clean downloaded ONNX Runtime
 clean-ort:
-	rm -rf $(ORT_CUDA_12_2_DIR) .ort-env.sh
+	rm -rf $(ORT_CUDA_12_2_DIR) $(ORT_CPU_DIR) .ort-env.sh .ort-env-cpu.sh
 
 # ==============================================================================
 # Run
 # ==============================================================================
 
 run: build check-models
-	./target/release/nomic-serve
+	@# Try to load ORT_DYLIB_PATH from .ort-env-cpu.sh if available
+	@if [ -f "$(shell pwd)/.ort-env-cpu.sh" ]; then \
+		echo "Loading ORT_DYLIB_PATH from .ort-env-cpu.sh..."; \
+		export $$(grep -v '^#' $(shell pwd)/.ort-env-cpu.sh | xargs); \
+	fi; \
+	if [ -z "$$ORT_DYLIB_PATH" ]; then \
+		echo "⚠️  ORT_DYLIB_PATH not set. Trying to use system ONNX Runtime..."; \
+		echo "   If this fails, run: make download-ort-cpu"; \
+	fi; \
+	ORT_DYLIB_PATH=$$ORT_DYLIB_PATH LD_LIBRARY_PATH=$$LD_LIBRARY_PATH ./target/release/nomic-serve
 
 run-full: build check-models
 	AVERAGING=arithmetic TXT_MODEL=models/txt/model.onnx IMG_MODEL=models/img/model.onnx ./target/release/nomic-serve

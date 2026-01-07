@@ -31,8 +31,9 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use image::{DynamicImage, ImageReader};
 use ndarray::ShapeError;
 // ort rc2 has different module structure - try root-level imports
-// If building with cuda-12-2 feature, ort rc2 is used which has different API
-#[cfg(not(feature = "cuda-12-2"))]
+// If building with cuda-legacy feature, ort rc2 is used which has different API
+// For ort rc.11+, use module-based API
+#[cfg(not(feature = "ort-rc2-api"))]
 use ort::{
     session::{
         builder::{GraphOptimizationLevel, SessionBuilder},
@@ -42,33 +43,33 @@ use ort::{
     Error as OrtError,
 };
 
-// For ort rc2, items are re-exported at root level
-#[cfg(feature = "cuda-12-2")]
+// For ort rc.2, items are re-exported at root level
+#[cfg(feature = "ort-rc2-api")]
 use ort::{
     Error as OrtError, GraphOptimizationLevel, Session, SessionBuilder, SessionInputValue,
     SessionInputs, Value,
 };
 
-#[cfg(all(feature = "cuda", not(feature = "cuda-12-2")))]
+#[cfg(all(feature = "cuda", not(feature = "ort-rc2-api")))]
 use ort::execution_providers::CUDAExecutionProvider;
 
-#[cfg(feature = "cuda-12-2")]
+#[cfg(feature = "ort-rc2-api")]
 use ort::CUDAExecutionProvider;
 
 // Check if CUDA feature is compiled in
-#[cfg(any(feature = "cuda", feature = "cuda-12-2"))]
+#[cfg(any(feature = "cuda", feature = "cuda-legacy"))]
 fn check_cuda_feature_enabled() -> bool {
     true
 }
 
-#[cfg(not(any(feature = "cuda", feature = "cuda-12-2")))]
+#[cfg(not(any(feature = "cuda", feature = "cuda-legacy")))]
 fn check_cuda_feature_enabled() -> bool {
     false
 }
 
 // Check if CUDA libraries are actually available at runtime
 // Returns (available, library_path_if_found)
-#[cfg(any(feature = "cuda", feature = "cuda-12-2"))]
+#[cfg(any(feature = "cuda", feature = "cuda-legacy"))]
 fn check_cuda_libraries_available() -> (bool, Option<std::path::PathBuf>) {
     use std::fs;
     use std::path::PathBuf;
@@ -148,7 +149,7 @@ fn check_cuda_libraries_available() -> (bool, Option<std::path::PathBuf>) {
     (false, None)
 }
 
-#[cfg(not(any(feature = "cuda", feature = "cuda-12-2")))]
+#[cfg(not(any(feature = "cuda", feature = "cuda-legacy")))]
 fn check_cuda_libraries_available() -> (bool, Option<std::path::PathBuf>) {
     (false, None)
 }
@@ -341,7 +342,7 @@ impl AppState {
 
             // Try CUDA if requested, fall back to CPU if it fails
             let (session, text_gpu_used) = if actual_use_gpu {
-                #[cfg(any(feature = "cuda", feature = "cuda-12-2"))]
+                #[cfg(any(feature = "cuda", feature = "cuda-legacy"))]
                 {
                     info!("Attempting to create text model session with CUDA...");
                     let builder = SessionBuilder::new()
@@ -487,7 +488,7 @@ impl AppState {
                         }
                     }
                 }
-                #[cfg(not(any(feature = "cuda", feature = "cuda-12-2")))]
+                #[cfg(not(any(feature = "cuda", feature = "cuda-legacy")))]
                 {
                     let cpu_builder = SessionBuilder::new()
                         .map_err(|e| anyhow::anyhow!("Failed to create session builder: {}", e))?
@@ -531,7 +532,7 @@ impl AppState {
 
             // Try CUDA if requested, fall back to CPU if it fails
             let (session, vision_gpu_used) = if actual_use_gpu {
-                #[cfg(any(feature = "cuda", feature = "cuda-12-2"))]
+                #[cfg(any(feature = "cuda", feature = "cuda-legacy"))]
                 {
                     info!("Attempting to create vision model session with CUDA...");
                     let builder = SessionBuilder::new()
@@ -637,7 +638,7 @@ impl AppState {
                         }
                     }
                 }
-                #[cfg(not(any(feature = "cuda", feature = "cuda-12-2")))]
+                #[cfg(not(any(feature = "cuda", feature = "cuda-legacy")))]
                 {
                     let cpu_builder = SessionBuilder::new()
                         .map_err(|e| anyhow::anyhow!("Failed to create session builder: {}", e))?
@@ -1722,13 +1723,13 @@ async fn fetch_image_url(url: &str) -> Result<Vec<u8>, Error> {
 
 /// Verify CUDA session actually works by running a test inference and checking GPU usage
 /// This catches driver compatibility issues that only appear at runtime
-#[cfg(any(feature = "cuda", feature = "cuda-12-2"))]
+#[cfg(any(feature = "cuda", feature = "cuda-legacy"))]
 fn verify_cuda_session(session: &mut Session) -> Result<(), String> {
-    #[cfg(not(feature = "cuda-12-2"))]
+    #[cfg(not(feature = "ort-rc2-api"))]
     use ort::session::{SessionInputValue, SessionInputs};
-    #[cfg(not(feature = "cuda-12-2"))]
+    #[cfg(not(feature = "ort-rc2-api"))]
     use ort::value::Value;
-    #[cfg(feature = "cuda-12-2")]
+    #[cfg(feature = "ort-rc2-api")]
     use ort::{SessionInputValue, SessionInputs, Value};
 
     // Get GPU memory before inference
@@ -1801,7 +1802,7 @@ fn verify_cuda_session(session: &mut Session) -> Result<(), String> {
 }
 
 /// Get current GPU memory usage in MiB
-#[cfg(any(feature = "cuda", feature = "cuda-12-2"))]
+#[cfg(any(feature = "cuda", feature = "cuda-legacy"))]
 fn get_gpu_memory_used() -> Option<u64> {
     let output = Command::new("nvidia-smi")
         .args(&["--query-gpu=memory.used", "--format=csv,noheader,nounits"])
@@ -1812,24 +1813,24 @@ fn get_gpu_memory_used() -> Option<u64> {
     stdout.trim().parse::<u64>().ok()
 }
 
-#[cfg(not(any(feature = "cuda", feature = "cuda-12-2")))]
+#[cfg(not(any(feature = "cuda", feature = "cuda-legacy")))]
 fn verify_cuda_session(_session: &mut Session) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(not(any(feature = "cuda", feature = "cuda-12-2")))]
+#[cfg(not(any(feature = "cuda", feature = "cuda-legacy")))]
 fn get_gpu_memory_used() -> Option<u64> {
     None
 }
 
 /// Verify CUDA vision session actually works by running a test inference and checking GPU usage
-#[cfg(any(feature = "cuda", feature = "cuda-12-2"))]
+#[cfg(any(feature = "cuda", feature = "cuda-legacy"))]
 fn verify_cuda_vision_session(session: &mut Session) -> Result<(), String> {
-    #[cfg(not(feature = "cuda-12-2"))]
+    #[cfg(not(feature = "ort-rc2-api"))]
     use ort::session::{SessionInputValue, SessionInputs};
-    #[cfg(not(feature = "cuda-12-2"))]
+    #[cfg(not(feature = "ort-rc2-api"))]
     use ort::value::Value;
-    #[cfg(feature = "cuda-12-2")]
+    #[cfg(feature = "ort-rc2-api")]
     use ort::{SessionInputValue, SessionInputs, Value};
 
     // Get GPU memory before inference
@@ -1884,7 +1885,7 @@ fn verify_cuda_vision_session(session: &mut Session) -> Result<(), String> {
     }
 }
 
-#[cfg(not(any(feature = "cuda", feature = "cuda-12-2")))]
+#[cfg(not(any(feature = "cuda", feature = "cuda-legacy")))]
 fn verify_cuda_vision_session(_session: &mut Session) -> Result<(), String> {
     Ok(())
 }
@@ -1965,17 +1966,17 @@ fn embed_text(state: &TextState, text: &str) -> Result<(Vec<f32>, usize), Error>
     let inference_time = inference_start.elapsed();
 
     // ort rc2 returns array directly, rc10 returns (shape, array) tuple
-    #[cfg(not(feature = "cuda-12-2"))]
+    #[cfg(not(feature = "ort-rc2-api"))]
     let (output_shape, raw_embedding) = outputs[0].try_extract_tensor::<f32>()?.to_owned();
-    #[cfg(feature = "cuda-12-2")]
+    #[cfg(feature = "ort-rc2-api")]
     let raw_embedding = outputs[0].try_extract_tensor::<f32>()?.to_owned();
-    #[cfg(feature = "cuda-12-2")]
+    #[cfg(feature = "ort-rc2-api")]
     let output_shape = raw_embedding.shape().to_vec();
 
     let postprocess_start = Instant::now();
-    #[cfg(not(feature = "cuda-12-2"))]
+    #[cfg(not(feature = "ort-rc2-api"))]
     let embedding_vec = raw_embedding.to_vec();
-    #[cfg(feature = "cuda-12-2")]
+    #[cfg(feature = "ort-rc2-api")]
     let embedding_vec: Vec<f32> = raw_embedding.iter().cloned().collect();
     let shape_dims: Vec<usize> = output_shape.iter().map(|&d| d as usize).collect();
 
@@ -2099,16 +2100,16 @@ fn embed_image(state: &VisionState, image: &DynamicImage) -> Result<Vec<f32>, Er
         inference_time.as_secs_f64() * 1000.0
     );
     // ort rc2 returns array directly, rc10 returns (shape, array) tuple
-    #[cfg(not(feature = "cuda-12-2"))]
+    #[cfg(not(feature = "ort-rc2-api"))]
     let (output_shape, raw_output) = outputs[0].try_extract_tensor::<f32>()?.to_owned();
-    #[cfg(feature = "cuda-12-2")]
+    #[cfg(feature = "ort-rc2-api")]
     let raw_output = outputs[0].try_extract_tensor::<f32>()?.to_owned();
-    #[cfg(feature = "cuda-12-2")]
+    #[cfg(feature = "ort-rc2-api")]
     let output_shape = raw_output.shape().to_vec();
 
-    #[cfg(not(feature = "cuda-12-2"))]
+    #[cfg(not(feature = "ort-rc2-api"))]
     let output_vec = raw_output.to_vec();
-    #[cfg(feature = "cuda-12-2")]
+    #[cfg(feature = "ort-rc2-api")]
     let output_vec: Vec<f32> = raw_output.iter().cloned().collect();
     let shape_dims: Vec<usize> = output_shape.iter().map(|&d| d as usize).collect();
 

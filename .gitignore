@@ -31,3 +31,4 @@ test_images/
 results/
 *.tar.gz
 .ort-cuda*
+.ort-cpu*

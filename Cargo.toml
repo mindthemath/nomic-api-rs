@@ -6,7 +6,8 @@ edition = "2021"
 [features]
 default = []
 cuda = ["ort/cuda"]  # Enable CUDA support (Linux only, requires NVIDIA drivers, CUDA 12.3+)
-cuda-12-2 = ["ort/cuda"]  # Enable CUDA support for CUDA 12.1/12.2 (uses older ort version via patch)
+cuda-legacy = ["ort/cuda", "ort-rc2-api"]  # Enable CUDA support for CUDA 11.8+ (uses ort rc.2 API)
+ort-rc2-api = []  # Use ort rc.2 API style (root-level exports) - needed for ort rc.2 compatibility
 
 [dependencies]
 anyhow        = "1"
@@ -16,7 +17,7 @@ hex           = "0.4"
 image         = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
 kamadak-exif  = "0.5"
 ndarray       = "0.16"
-# ort version selection: default is rc10, patched to rc2 for cuda-12-2 builds in makefile
+# ort version selection: default is rc2, compatible with ONNX Runtime 1.18.1 (CUDA 11.8+)
 ort = { version = "2.0.0-rc.2", default-features = false, features = ["ndarray", "half", "load-dynamic"] }
 reqwest       = { version = "0.12", default-features = false, features = ["rustls-tls", "trust-dns"] }
 serde         = { version = "1", features = ["derive"] }
