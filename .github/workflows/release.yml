@@ -238,6 +238,7 @@ jobs:
             - `POST /img/embed` - Single image embedding
             - `POST /img/batch` - Batch image embeddings
             - `GET /health` - Health check
+            - `GET /info` - Server information (model paths, configuration)
             - `GET /docs` - Swagger UI
 
             ## Environment Variables
@@ -247,6 +248,7 @@ jobs:
             - `TOKENIZER` - Path to tokenizer file (default: models/txt/tokenizer.json)
             - `IMG_MODEL` - Path to vision ONNX model (default depends on variant: `model_quantized.onnx` or `model.onnx`)
             - `USE_GPU` - Set to 1 to enable GPU (requires CUDA drivers)
+            - `AVERAGING` - Averaging method for image color statistics: `arithmetic` or `geometric` (default: `geometric`)
 
             **Model Variants:**
             - **Quantized** (`*-quantized.tar.gz`): Smaller files, faster inference, ~99% quality. Recommended for most use cases.

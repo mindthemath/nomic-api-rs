@@ -36,6 +36,20 @@ Returns health status and model availability.
 }
 ```
 
+### `GET /info`
+Returns server information including model paths and configuration.
+
+**Response:**
+```json
+{
+  "averaging": "geometric",
+  "load_cuda": false,
+  "txt_model": "models/txt/model_quantized.onnx",
+  "tokenizer": "models/txt/tokenizer.json",
+  "img_model": "models/img/model_quantized.onnx"
+}
+```
+
 ### `POST /embed` (or `/txt/embed`)
 Generate embedding for a single text.
 
@@ -128,6 +142,45 @@ Generate embeddings for multiple images.
 }
 ```
 
+### `POST /img/stats`
+Extract image statistics including EXIF metadata and color analysis.
+
+**Request:**
+```json
+{
+  "content": "https://example.com/image.jpg",
+  "averaging_method": "geometric"
+}
+```
+
+- `content` (required): Image as URL, data URL (`data:image/jpeg;base64,...`), or raw base64
+- `averaging_method` (optional): Color averaging method - `arithmetic` or `geometric` (defaults to `AVERAGING` env var or `geometric`)
+
+**Response:**
+```json
+{
+  "exif_data": {
+    "Make": "Canon",
+    "Model": "EOS 5D",
+    "DateTime": "2024:01:01 12:00:00"
+  },
+  "color_data": {
+    "avg_color": {
+      "rgb": [0.5, 0.3, 0.2],
+      "hex": "#804d33",
+      "method": "geometric"
+    },
+    "dominant_color": {
+      "rgb": [0.6, 0.4, 0.3],
+      "hex": "#99664d"
+    }
+  },
+  "time_ms": 12.34
+}
+```
+
+**Limits:** Maximum 20MB per image (compressed). Supports JPEG, PNG, GIF, WebP, BMP, TIFF.
+
 ### `GET /docs`
 Swagger UI documentation page.
 
@@ -144,6 +197,7 @@ OpenAPI 3.1.0 schema.
 | `TOKENIZER` | `models/txt/tokenizer.json` | Path to tokenizer |
 | `IMG_MODEL` | `models/img/model_quantized.onnx` | Path to vision ONNX model |
 | `USE_GPU` | `false` | Enable GPU inference (`1` or `true`) |
+| `AVERAGING` | `geometric` | Default averaging method for image color statistics: `arithmetic` or `geometric` |
 | `DISABLE_CORS` | `false` | Disable CORS entirely (`1` or `true`) |
 | `CORS_ORIGINS` | *(see below)* | Comma-separated list of allowed origins |
 
