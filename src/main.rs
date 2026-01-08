@@ -21,7 +21,7 @@
 mod image_stats;
 
 use axum::{
-    extract::State,
+    extract::{DefaultBodyLimit, State},
     http::{header, Method, StatusCode},
     response::{IntoResponse, Json},
     routing::{get, post},
@@ -738,6 +738,11 @@ async fn main() {
         vision_status
     );
     info!("   GPU Support:  {}", gpu_status);
+    let body_limit_mb = std::env::var("MAX_BODY_SIZE_MB")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(100);
+    info!("   Max body size: {} MB", body_limit_mb);
     info!("📚 API docs available at http://0.0.0.0:{}/docs", port);
 
     // Build router - base routes
@@ -761,6 +766,7 @@ async fn main() {
         // OpenAPI
         .route("/openapi.json", get(openapi_handler))
         .route("/docs", get(docs_handler))
+        .layer(DefaultBodyLimit::max(body_limit_mb * 1024 * 1024))
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 
