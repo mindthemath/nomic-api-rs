@@ -23,7 +23,9 @@ async def make_request(
     """Make a single request and return (latency_ms, success)."""
     start = time.perf_counter()
     try:
-        async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+        async with session.post(
+            url, json=payload, timeout=aiohttp.ClientTimeout(total=30)
+        ) as resp:
             if resp.status == 200:
                 await resp.json()  # Read response
                 elapsed = (time.perf_counter() - start) * 1000
@@ -56,9 +58,7 @@ async def benchmark_endpoint(
 
     async with aiohttp.ClientSession() as session:
         # Create all tasks
-        tasks = [
-            bounded_request(session, url, payload) for _ in range(total_requests)
-        ]
+        tasks = [bounded_request(session, url, payload) for _ in range(total_requests)]
 
         start = time.perf_counter()
         results = await asyncio.gather(*tasks)
@@ -80,8 +80,12 @@ async def benchmark_endpoint(
         "rps": total_requests / total_time,
         "avg_latency_ms": sum(latencies) / len(latencies) if latencies else 0,
         "p50_latency_ms": sorted(latencies)[len(latencies) // 2] if latencies else 0,
-        "p95_latency_ms": sorted(latencies)[int(len(latencies) * 0.95)] if latencies else 0,
-        "p99_latency_ms": sorted(latencies)[int(len(latencies) * 0.99)] if latencies else 0,
+        "p95_latency_ms": (
+            sorted(latencies)[int(len(latencies) * 0.95)] if latencies else 0
+        ),
+        "p99_latency_ms": (
+            sorted(latencies)[int(len(latencies) * 0.99)] if latencies else 0
+        ),
     }
 
 
@@ -155,7 +159,9 @@ def main():
 
     for result in results:
         print(f"\n{result['endpoint']}:")
-        print(f"  Requests: {result['successful']}/{result['total_requests']} successful ({result['success_rate']:.1f}%)")
+        print(
+            f"  Requests: {result['successful']}/{result['total_requests']} successful ({result['success_rate']:.1f}%)"
+        )
         print(f"  Throughput: {result['rps']:.2f} requests/second")
         print(f"  Latency:")
         print(f"    Average: {result['avg_latency_ms']:.2f} ms")
@@ -192,4 +198,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

@@ -12,8 +12,8 @@ Usage:
 
 import sys
 import time
-from pathlib import Path
 from io import BytesIO
+from pathlib import Path
 
 import torch
 import torch.nn.functional as F
@@ -74,7 +74,7 @@ def main():
     # Load model and processor
     print("\nLoading model and processor...")
     print("(This may take a minute on first run - downloads from HuggingFace)")
-    
+
     try:
         processor = AutoImageProcessor.from_pretrained(
             "nomic-ai/nomic-embed-vision-v1.5"
@@ -124,7 +124,7 @@ def main():
 
     # Batch: same image × 2
     batch_embs = embed_batch(processor, model, [image1, image1], device)
-    
+
     diff_0 = torch.abs(ref_emb - batch_embs[0]).max().item()
     diff_1 = torch.abs(ref_emb - batch_embs[1]).max().item()
     diff_batch = torch.abs(batch_embs[0] - batch_embs[1]).max().item()
@@ -193,7 +193,12 @@ def main():
     print("CONCLUSION")
     print(f"{'=' * 70}")
 
-    all_identical_same = diff_0 < 0.0001 and diff_1 < 0.0001 and diff_batch < 0.0001 and max_diff < 0.0001
+    all_identical_same = (
+        diff_0 < 0.0001
+        and diff_1 < 0.0001
+        and diff_batch < 0.0001
+        and max_diff < 0.0001
+    )
     interference_different = diff_1 > 0.001 or diff_2 > 0.001
 
     if all_identical_same and not interference_different:
@@ -215,7 +220,9 @@ safely batch different images.
 
 This confirms the interference is a model characteristic, not ONNX-specific.
 Both implementations show the same cross-sample interference pattern.
-""".format(max(diff_1, diff_2))
+""".format(
+                max(diff_1, diff_2)
+            )
         )
     else:
         print(
@@ -227,4 +234,3 @@ Both implementations show the same cross-sample interference pattern.
 
 if __name__ == "__main__":
     main()
-

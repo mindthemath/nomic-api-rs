@@ -15,8 +15,8 @@ Usage:
 import argparse
 import sys
 import time
-from pathlib import Path
 from io import BytesIO
+from pathlib import Path
 
 import numpy as np
 from PIL import Image
@@ -103,21 +103,15 @@ def benchmark_batch(
 
 def main():
     parser = argparse.ArgumentParser(description="Benchmark vision model batching")
-    parser.add_argument(
-        "--gpu", action="store_true", help="Use GPU execution provider"
-    )
+    parser.add_argument("--gpu", action="store_true", help="Use GPU execution provider")
     parser.add_argument(
         "--batch-sizes",
         type=str,
         default="1,2,4,8,16",
         help="Comma-separated batch sizes to test",
     )
-    parser.add_argument(
-        "--warmup", type=int, default=3, help="Number of warmup runs"
-    )
-    parser.add_argument(
-        "--runs", type=int, default=20, help="Number of benchmark runs"
-    )
+    parser.add_argument("--warmup", type=int, default=3, help="Number of warmup runs")
+    parser.add_argument("--runs", type=int, default=20, help="Number of benchmark runs")
     args = parser.parse_args()
 
     print("=" * 70)
@@ -127,7 +121,7 @@ def main():
     # Load model (try relative to script, then relative to project root)
     script_dir = Path(__file__).parent
     project_root = script_dir.parent
-    
+
     model_path = project_root / "models" / "img" / "model_quantized.onnx"
     if not model_path.exists():
         model_path = project_root / "models" / "img" / "model.onnx"
@@ -137,7 +131,11 @@ def main():
         sys.exit(1)
 
     # Setup session
-    providers = ["CUDAExecutionProvider", "CPUExecutionProvider"] if args.gpu else ["CPUExecutionProvider"]
+    providers = (
+        ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        if args.gpu
+        else ["CPUExecutionProvider"]
+    )
     session_options = ort.SessionOptions()
     session_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
 
@@ -174,7 +172,9 @@ def main():
 
     for batch_size in batch_sizes:
         if batch_size > len(tensors):
-            print(f"⚠️  Skipping batch_size={batch_size} (not enough pre-created tensors)")
+            print(
+                f"⚠️  Skipping batch_size={batch_size} (not enough pre-created tensors)"
+            )
             continue
 
         batch_tensors = tensors[:batch_size]
@@ -201,8 +201,12 @@ def main():
     if len(results) > 1:
         best = max(results, key=lambda x: x["throughput_ips"])
         worst = min(results, key=lambda x: x["throughput_ips"])
-        print(f"Best throughput: {best['throughput_ips']:.2f} img/s (batch_size={best['batch_size']})")
-        print(f"Worst throughput: {worst['throughput_ips']:.2f} img/s (batch_size={worst['batch_size']})")
+        print(
+            f"Best throughput: {best['throughput_ips']:.2f} img/s (batch_size={best['batch_size']})"
+        )
+        print(
+            f"Worst throughput: {worst['throughput_ips']:.2f} img/s (batch_size={worst['batch_size']})"
+        )
 
         if best["batch_size"] > 1:
             improvement = (best["throughput_ips"] / worst["throughput_ips"] - 1) * 100
@@ -211,9 +215,14 @@ def main():
             print("⚠️  Batching does not improve throughput (may be memory-bound)")
 
     print(f"\nRecommendations:")
-    if len(results) > 1 and results[-1]["per_image_time_ms"] < results[0]["per_image_time_ms"]:
+    if (
+        len(results) > 1
+        and results[-1]["per_image_time_ms"] < results[0]["per_image_time_ms"]
+    ):
         optimal_batch = max(results, key=lambda x: x["throughput_ips"])
-        print(f"  - Use batch_size={optimal_batch['batch_size']} for optimal throughput")
+        print(
+            f"  - Use batch_size={optimal_batch['batch_size']} for optimal throughput"
+        )
     else:
         print(f"  - Sequential processing (batch_size=1) is optimal")
         print(f"  - Consider horizontal scaling instead of batching")
@@ -221,4 +230,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

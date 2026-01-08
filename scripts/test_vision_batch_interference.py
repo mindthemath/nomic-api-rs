@@ -14,8 +14,8 @@ Usage:
 
 import sys
 import time
-from pathlib import Path
 from io import BytesIO
+from pathlib import Path
 
 import numpy as np
 from PIL import Image
@@ -129,7 +129,7 @@ def main():
     # Load model (try relative to script, then relative to project root)
     script_dir = Path(__file__).parent
     project_root = script_dir.parent
-    
+
     model_path = project_root / "models" / "img" / "model_quantized.onnx"
     if not model_path.exists():
         model_path = project_root / "models" / "img" / "model.onnx"
@@ -226,9 +226,7 @@ def main():
     single_embs = [embed_single(session, tensor1) for _ in range(4)]
     batch_embs = embed_batch(session, [tensor1, tensor1, tensor1, tensor1])
 
-    max_diff = max(
-        np.abs(single_embs[i] - batch_embs[i]).max() for i in range(4)
-    )
+    max_diff = max(np.abs(single_embs[i] - batch_embs[i]).max() for i in range(4))
     print(f"Max difference across all 4 images: {max_diff:.6f}")
     status = "✓ identical" if max_diff < 0.0001 else "✗ DIFFERENT"
     print(f"Result: {status}")
@@ -274,4 +272,3 @@ Further investigation needed to understand the root cause.
 
 if __name__ == "__main__":
     main()
-

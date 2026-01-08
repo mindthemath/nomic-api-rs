@@ -30,6 +30,10 @@ use axum::{
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use image::{DynamicImage, ImageReader};
 use ndarray::ShapeError;
+#[cfg(feature = "cuda")]
+use ort::execution_providers::{
+    CPUExecutionProvider, CUDAExecutionProvider, ExecutionProviderDispatch,
+};
 use ort::{
     session::{
         builder::{GraphOptimizationLevel, SessionBuilder},
@@ -38,8 +42,6 @@ use ort::{
     value::Value,
     Error as OrtError,
 };
-#[cfg(feature = "cuda")]
-use ort::execution_providers::{CUDAExecutionProvider, CPUExecutionProvider, ExecutionProviderDispatch};
 
 use serde::{Deserialize, Serialize};
 use std::{
@@ -182,7 +184,6 @@ pub struct AppState {
     gpu_enabled: bool,
 }
 
-
 impl AppState {
     async fn new(
         txt_model: Option<PathBuf>,
@@ -226,8 +227,10 @@ impl AppState {
             if use_gpu {
                 // Use CUDA provider first, with CPU as fallback
                 // ONNX Runtime will use GPU for supported operations and fall back to CPU for unsupported ones
-                let cuda_provider: ExecutionProviderDispatch = CUDAExecutionProvider::default().into();
-                let cpu_provider: ExecutionProviderDispatch = CPUExecutionProvider::default().into();
+                let cuda_provider: ExecutionProviderDispatch =
+                    CUDAExecutionProvider::default().into();
+                let cpu_provider: ExecutionProviderDispatch =
+                    CPUExecutionProvider::default().into();
                 // Set both providers - CUDA first (higher priority), CPU as fallback
                 builder = builder.with_execution_providers([cuda_provider, cpu_provider])
                     .map_err(|e| {
@@ -237,8 +240,10 @@ impl AppState {
                 info!("CUDA execution provider initialized successfully (with CPU fallback).");
             } else {
                 info!("GPU not requested (USE_GPU environment variable not '1'). Using CPU.");
-                let cpu_provider: ExecutionProviderDispatch = CPUExecutionProvider::default().into();
-                builder = builder.with_execution_providers([cpu_provider])
+                let cpu_provider: ExecutionProviderDispatch =
+                    CPUExecutionProvider::default().into();
+                builder = builder
+                    .with_execution_providers([cpu_provider])
                     .map_err(|e| anyhow::anyhow!("Failed to set CPU execution provider: {}", e))?;
             }
             #[cfg(not(feature = "cuda"))]
@@ -716,17 +721,22 @@ async fn main() {
     };
 
     // Initialize application state
-    let state = match AppState::new(txt_model, tokenizer, img_model, default_avg_method, use_gpu).await {
-        Ok(state) => state,
-        Err(e) => {
-            eprintln!("Failed to initialize server: {}", e);
-            std::process::exit(1);
-        }
-    };
+    let state =
+        match AppState::new(txt_model, tokenizer, img_model, default_avg_method, use_gpu).await {
+            Ok(state) => state,
+            Err(e) => {
+                eprintln!("Failed to initialize server: {}", e);
+                std::process::exit(1);
+            }
+        };
 
     let text_status = if state.text.is_some() { "✓" } else { "✗" };
     let vision_status = if state.vision.is_some() { "✓" } else { "✗" };
-    let gpu_status = if state.gpu_enabled { "✓ (CUDA)" } else { "✗ (CPU)" };
+    let gpu_status = if state.gpu_enabled {
+        "✓ (CUDA)"
+    } else {
+        "✗ (CPU)"
+    };
 
     info!("🚀 Nomic embedding server ready on http://0.0.0.0:{}", port);
     info!(

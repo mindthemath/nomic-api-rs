@@ -6,12 +6,13 @@ Verifies if PyTorch batches correctly (like vision model does).
 """
 
 import sys
-import torch
-import torch.nn.functional as F
 from pathlib import Path
 
+import torch
+import torch.nn.functional as F
+
 try:
-    from transformers import AutoTokenizer, AutoModel
+    from transformers import AutoModel, AutoTokenizer
 except ImportError:
     print("Missing: pip install transformers torch")
     sys.exit(1)
@@ -27,7 +28,7 @@ def embed_single(tokenizer, model, text: str, device: str) -> torch.Tensor:
     """Embed a single text (batch_size=1)."""
     inputs = tokenizer(text, return_tensors="pt", padding=True, truncation=True)
     inputs = {k: v.to(device) for k, v in inputs.items()}
-    
+
     with torch.no_grad():
         outputs = model(**inputs)
         # Get last hidden state
@@ -36,7 +37,7 @@ def embed_single(tokenizer, model, text: str, device: str) -> torch.Tensor:
         embedding = mean_pool(last_hidden, inputs["attention_mask"])
         # L2 normalize
         embedding = F.normalize(embedding, p=2, dim=1)
-    
+
     return embedding[0]  # Return [768] tensor
 
 
@@ -44,7 +45,7 @@ def embed_batch(tokenizer, model, texts: list, device: str) -> list[torch.Tensor
     """Embed multiple texts in a single batch."""
     inputs = tokenizer(texts, return_tensors="pt", padding=True, truncation=True)
     inputs = {k: v.to(device) for k, v in inputs.items()}
-    
+
     with torch.no_grad():
         outputs = model(**inputs)
         last_hidden = outputs.last_hidden_state
@@ -52,7 +53,7 @@ def embed_batch(tokenizer, model, texts: list, device: str) -> list[torch.Tensor
         embeddings = mean_pool(last_hidden, inputs["attention_mask"])
         # L2 normalize
         embeddings = F.normalize(embeddings, p=2, dim=1)
-    
+
     # Return list of [768] tensors
     return [embeddings[i] for i in range(len(texts))]
 
@@ -66,7 +67,7 @@ def main():
     # Load model and tokenizer
     print("\nLoading model and tokenizer...")
     print("(This may take a minute on first run - downloads from HuggingFace)")
-    
+
     try:
         tokenizer = AutoTokenizer.from_pretrained("nomic-ai/nomic-embed-text-v1.5")
         model = AutoModel.from_pretrained(
@@ -106,7 +107,7 @@ def main():
 
     # Batch: same text × 2
     batch_embs = embed_batch(tokenizer, model, [texts[0], texts[0]], device)
-    
+
     diff_0 = torch.abs(ref_emb - batch_embs[0]).max().item()
     diff_1 = torch.abs(ref_emb - batch_embs[1]).max().item()
     diff_batch = torch.abs(batch_embs[0] - batch_embs[1]).max().item()
@@ -141,8 +142,12 @@ def main():
     print("-" * 70)
     status_1 = "✓ identical" if diff_1 < 0.0001 else "✗ DIFFERENT"
     status_2 = "✓ identical" if diff_2 < 0.0001 else "✗ DIFFERENT"
-    print(f"{'text[0] single vs batch[0]':<40} {diff_1:<15.6f} {cos_sim_1:.6f} {status_1}")
-    print(f"{'text[1] single vs batch[1]':<40} {diff_2:<15.6f} {cos_sim_2:.6f} {status_2}")
+    print(
+        f"{'text[0] single vs batch[0]':<40} {diff_1:<15.6f} {cos_sim_1:.6f} {status_1}"
+    )
+    print(
+        f"{'text[1] single vs batch[1]':<40} {diff_2:<15.6f} {cos_sim_2:.6f} {status_2}"
+    )
 
     # Test 3: Larger batch
     print(f"\n{'=' * 70}")
@@ -155,10 +160,10 @@ def main():
     max_diff = max(
         torch.abs(single_embs[i] - batch_embs[i]).max().item() for i in range(4)
     )
-    avg_cos_sim = sum(
-        torch.dot(single_embs[i], batch_embs[i]).item() for i in range(4)
-    ) / 4
-    
+    avg_cos_sim = (
+        sum(torch.dot(single_embs[i], batch_embs[i]).item() for i in range(4)) / 4
+    )
+
     print(f"Max difference across all 4 texts: {max_diff:.6f}")
     print(f"Average cosine similarity: {avg_cos_sim:.6f}")
     status = "✓ identical" if max_diff < 0.0001 else "✗ DIFFERENT"
@@ -175,7 +180,9 @@ def main():
     print(f"  - Same text × 2: {diff_0:.6f} (identical: {diff_0 < 0.0001})")
     print(f"  - Different texts: {diff_1:.6f}, {diff_2:.6f}")
     print(f"  - Cosine similarity: {cos_sim_1:.6f}, {cos_sim_2:.6f}")
-    print(f"  - Larger batch (4 texts): {max_diff:.6f} (identical: {max_diff < 0.0001})")
+    print(
+        f"  - Larger batch (4 texts): {max_diff:.6f} (identical: {max_diff < 0.0001})"
+    )
 
     # Conclusion
     print(f"\n{'=' * 70}")
@@ -222,4 +229,3 @@ safely batch different texts.
 
 if __name__ == "__main__":
     main()
-
