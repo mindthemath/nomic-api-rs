@@ -124,7 +124,7 @@ run-benchmark: build
 		echo "❌ FP32 vision model not found. Run: make model-img"; \
 		exit 1; \
 	fi
-	TXT_MODEL=models/txt/model.onnx IMG_MODEL=models/img/model.onnx TXT_MAX_BATCH_SIZE=2056 IMG_MAX_BATCH_SIZE=2056 ./target/release/nomic-serve
+	TXT_MODEL=models/txt/model.onnx IMG_MODEL=models/img/model.onnx TXT_MAX_BATCH_SIZE=1024 IMG_MAX_BATCH_SIZE=128 ./target/release/nomic-serve
 
 run-full: build check-models
 	AVERAGING=arithmetic TXT_MODEL=models/txt/model.onnx IMG_MODEL=models/img/model.onnx ./target/release/nomic-serve
