@@ -38,6 +38,8 @@ use ort::{
     value::Value,
     Error as OrtError,
 };
+#[cfg(feature = "cuda")]
+use ort::execution_providers::{CUDAExecutionProvider, CPUExecutionProvider, ExecutionProviderDispatch};
 
 use serde::{Deserialize, Serialize};
 use std::{
@@ -177,7 +179,9 @@ pub struct AppState {
     txt_model_path: Option<PathBuf>,
     tokenizer_path: Option<PathBuf>,
     img_model_path: Option<PathBuf>,
+    gpu_enabled: bool,
 }
+
 
 impl AppState {
     async fn new(
@@ -185,6 +189,7 @@ impl AppState {
         tokenizer: Option<PathBuf>,
         img_model: Option<PathBuf>,
         default_avg_method: image_stats::AveragingMethod,
+        use_gpu: bool,
     ) -> anyhow::Result<Self> {
         let cold_start = Instant::now();
 
@@ -192,6 +197,57 @@ impl AppState {
         let txt_model_path = txt_model.clone();
         let tokenizer_path = tokenizer.clone();
         let img_model_path = img_model.clone();
+
+        #[cfg(feature = "cuda")]
+        let gpu_enabled = use_gpu;
+        #[cfg(not(feature = "cuda"))]
+        let gpu_enabled = false;
+
+        // Verify CUDA is available if requested
+        #[cfg(feature = "cuda")]
+        if use_gpu {
+            // Check if CUDA libraries are available
+            if std::env::var("LD_LIBRARY_PATH").is_ok() {
+                info!("LD_LIBRARY_PATH is set, CUDA libraries should be available");
+            }
+            // Try to verify CUDA is accessible
+            if let Ok(cuda_path) = std::env::var("CUDA_PATH") {
+                info!("CUDA_PATH: {}", cuda_path);
+            }
+        }
+
+        let session_builder_factory = || -> anyhow::Result<SessionBuilder> {
+            let mut builder = SessionBuilder::new()
+                .map_err(|e| anyhow::anyhow!("Failed to create session builder: {}", e))?
+                .with_optimization_level(GraphOptimizationLevel::Level3)
+                .map_err(|e| anyhow::anyhow!("Failed to set optimization level: {}", e))?;
+
+            #[cfg(feature = "cuda")]
+            if use_gpu {
+                // Use CUDA provider first, with CPU as fallback
+                // ONNX Runtime will use GPU for supported operations and fall back to CPU for unsupported ones
+                let cuda_provider: ExecutionProviderDispatch = CUDAExecutionProvider::default().into();
+                let cpu_provider: ExecutionProviderDispatch = CPUExecutionProvider::default().into();
+                // Set both providers - CUDA first (higher priority), CPU as fallback
+                builder = builder.with_execution_providers([cuda_provider, cpu_provider])
+                    .map_err(|e| {
+                        warn!("Failed to initialize CUDA execution provider: {}. This may indicate CUDA is not available.", e);
+                        anyhow::anyhow!("CUDA execution provider failed: {}", e)
+                    })?;
+                info!("CUDA execution provider initialized successfully (with CPU fallback).");
+            } else {
+                info!("GPU not requested (USE_GPU environment variable not '1'). Using CPU.");
+                let cpu_provider: ExecutionProviderDispatch = CPUExecutionProvider::default().into();
+                builder = builder.with_execution_providers([cpu_provider])
+                    .map_err(|e| anyhow::anyhow!("Failed to set CPU execution provider: {}", e))?;
+            }
+            #[cfg(not(feature = "cuda"))]
+            {
+                info!("CUDA feature not enabled. Using CPU (default).");
+            }
+
+            Ok(builder)
+        };
 
         // Parse max batch sizes from environment (default: 64)
         let txt_max_batch_size = std::env::var("TXT_MAX_BATCH_SIZE")
@@ -215,13 +271,27 @@ impl AppState {
             let model_bytes = std::fs::read(&model_path)
                 .map_err(|e| anyhow::anyhow!("Failed to read model file: {}", e))?;
 
-            let builder = SessionBuilder::new()
-                .map_err(|e| anyhow::anyhow!("Failed to create session builder: {}", e))?
-                .with_optimization_level(GraphOptimizationLevel::Level3)
-                .map_err(|e| anyhow::anyhow!("Failed to set optimization level: {}", e))?;
+            let builder = session_builder_factory()?;
             let session = builder
                 .commit_from_memory(&model_bytes)
                 .map_err(|e| anyhow::anyhow!("Failed to load model: {}", e))?;
+
+            // Log execution providers (for debugging)
+            #[cfg(feature = "cuda")]
+            if use_gpu {
+                // Try to verify CUDA is actually available by checking if we can access GPU
+                if let Ok(_) = std::process::Command::new("nvidia-smi")
+                    .arg("--query-gpu=name")
+                    .arg("--format=csv,noheader")
+                    .output()
+                {
+                    info!("CUDA GPU detected via nvidia-smi");
+                } else {
+                    warn!("nvidia-smi not available - CUDA may not be working");
+                }
+                info!("Text model loaded with CUDA provider configured.");
+                info!("If GPU is not used, ONNX Runtime may be falling back to CPU silently.");
+            }
 
             let tokenizer = Tokenizer::from_file(&tok_path).map_err(|e| anyhow::anyhow!(e))?;
 
@@ -262,13 +332,17 @@ impl AppState {
             let model_bytes = std::fs::read(&model_path)
                 .map_err(|e| anyhow::anyhow!("Failed to read model file: {}", e))?;
 
-            let builder = SessionBuilder::new()
-                .map_err(|e| anyhow::anyhow!("Failed to create session builder: {}", e))?
-                .with_optimization_level(GraphOptimizationLevel::Level3)
-                .map_err(|e| anyhow::anyhow!("Failed to set optimization level: {}", e))?;
+            let builder = session_builder_factory()?;
             let session = builder
                 .commit_from_memory(&model_bytes)
                 .map_err(|e| anyhow::anyhow!("Failed to load model: {}", e))?;
+
+            // Log execution providers (for debugging)
+            #[cfg(feature = "cuda")]
+            if use_gpu {
+                info!("Vision model loaded with CUDA provider configured.");
+                info!("If GPU is not used, ONNX Runtime may be falling back to CPU silently.");
+            }
 
             info!(
                 "Vision model supports batching (max_batch_size={})",
@@ -310,6 +384,7 @@ impl AppState {
             txt_model_path,
             tokenizer_path,
             img_model_path,
+            gpu_enabled,
         })
     }
 }
@@ -482,6 +557,9 @@ struct HealthResponse {
     /// Vision model loaded
     #[schema(example = true)]
     vision_model: bool,
+    /// GPU enabled
+    #[schema(example = true)]
+    gpu_enabled: bool,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -504,6 +582,9 @@ struct InfoResponse {
     /// Maximum batch size for image embeddings
     #[schema(example = 64)]
     img_max_batch_size: Option<usize>,
+    /// Whether GPU is enabled
+    #[schema(example = true)]
+    gpu_enabled: bool,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -596,6 +677,10 @@ async fn main() {
         .map(|v| matches!(v.to_lowercase().as_str(), "true" | "1" | "yes" | "y"))
         .unwrap_or(false);
 
+    let use_gpu = std::env::var("USE_GPU")
+        .map(|v| matches!(v.to_lowercase().as_str(), "true" | "1" | "yes" | "y"))
+        .unwrap_or(false);
+
     // Default averaging method for image stats
     let default_avg_method = std::env::var("AVERAGING")
         .ok()
@@ -631,7 +716,7 @@ async fn main() {
     };
 
     // Initialize application state
-    let state = match AppState::new(txt_model, tokenizer, img_model, default_avg_method).await {
+    let state = match AppState::new(txt_model, tokenizer, img_model, default_avg_method, use_gpu).await {
         Ok(state) => state,
         Err(e) => {
             eprintln!("Failed to initialize server: {}", e);
@@ -641,6 +726,7 @@ async fn main() {
 
     let text_status = if state.text.is_some() { "✓" } else { "✗" };
     let vision_status = if state.vision.is_some() { "✓" } else { "✗" };
+    let gpu_status = if state.gpu_enabled { "✓ (CUDA)" } else { "✗ (CPU)" };
 
     info!("🚀 Nomic embedding server ready on http://0.0.0.0:{}", port);
     info!(
@@ -651,6 +737,7 @@ async fn main() {
         "   Vision model: {} /img/embed, /img/batch, /img/stats",
         vision_status
     );
+    info!("   GPU Support:  {}", gpu_status);
     info!("📚 API docs available at http://0.0.0.0:{}/docs", port);
 
     // Build router - base routes
@@ -769,6 +856,7 @@ async fn health_handler(State(state): State<AppState>) -> Json<HealthResponse> {
         status: "OK".to_string(),
         text_model: state.text.is_some(),
         vision_model: state.vision.is_some(),
+        gpu_enabled: state.gpu_enabled,
     })
 }
 
@@ -801,6 +889,7 @@ async fn info_handler(State(state): State<AppState>) -> Json<InfoResponse> {
             .map(|p| p.to_string_lossy().to_string()),
         txt_max_batch_size: state.text.as_ref().map(|t| t.max_batch_size),
         img_max_batch_size: state.vision.as_ref().map(|v| v.max_batch_size),
+        gpu_enabled: state.gpu_enabled,
     })
 }
 

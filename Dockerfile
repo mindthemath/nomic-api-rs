@@ -4,15 +4,22 @@
 # ============================================================================
 # Stage 1: Build
 # ============================================================================
-FROM rust:1.92.0-slim AS builder
+# Use Ubuntu 22.04 as base to match CUDA runtime GLIBC version
+FROM ubuntu:22.04 AS builder
 
-# Install build dependencies
+# Install Rust and build dependencies
 RUN apt-get update && apt-get install -y \
+    curl \
     pkg-config \
     libssl-dev \
     ca-certificates \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
+
+# Install Rust
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/root/.cargo/bin:${PATH}"
+RUN rustup default 1.92.0
 
 WORKDIR /build
 
@@ -25,7 +32,8 @@ RUN mkdir -p src static/swagger-ui && \
     echo "<!-- placeholder -->" > static/swagger-ui/index.html
 
 # Build dependencies (cached layer)
-RUN cargo build --release && rm -rf src static
+ARG RUST_BUILD_FEATURES=""
+RUN cargo build --release ${RUST_BUILD_FEATURES} && rm -rf src static
 
 # Copy source code and static files (needed for include_str! at compile time)
 COPY src ./src
@@ -33,7 +41,7 @@ COPY static ./static
 
 # Build the actual binary
 # Touch source files to ensure cargo sees them as newer than cached artifacts
-RUN touch src/main.rs && cargo build --release
+RUN touch src/main.rs && cargo build --release ${RUST_BUILD_FEATURES}
 
 # Prepare ONNX Runtime libraries for copying to runtime stage
 # Copy libraries to a known location so we can reliably copy them later
@@ -92,7 +100,9 @@ CMD ["./nomic-serve"]
 # ============================================================================
 # Stage 3: GPU Runtime (CUDA)
 # ============================================================================
-FROM nvidia/cuda:12.1.0-runtime-ubuntu22.04 AS runtime-gpu
+# Use CUDA 12.3.2 with cuDNN 9 to match ONNX Runtime 2.0.0-rc.10 requirements
+# CUDA 12.1.0 is deprecated, so we use 12.3.2 which has cuDNN 9 and is not deprecated
+FROM nvidia/cuda:12.3.2-cudnn9-runtime-ubuntu22.04 AS runtime-gpu
 
 # Install runtime dependencies
 # dumb-init handles signals properly (SIGTERM, SIGINT) for graceful shutdown
@@ -133,7 +143,11 @@ ENV TOKENIZER=models/txt/tokenizer.json
 ENV TXT_MODEL=models/txt/${TXT_MODEL_FILE}
 ENV IMG_MODEL=models/img/${IMG_MODEL_FILE}
 ENV USE_GPU=1
-ENV LD_LIBRARY_PATH=/app/lib:${LD_LIBRARY_PATH}
+# Include CUDA libraries (including cuDNN) in LD_LIBRARY_PATH
+ENV LD_LIBRARY_PATH=/app/lib:/usr/local/cuda/lib64:/usr/local/cuda/targets/x86_64-linux/lib:${LD_LIBRARY_PATH}
+# Enable ONNX Runtime verbose logging to see which execution provider is used
+ENV ORT_LOG_LEVEL=1
+ENV ORT_LOG_SEVERITY_LEVEL=1
 
 EXPOSE 8080
 

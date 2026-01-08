@@ -352,6 +352,7 @@ docker-build-gpu: model-txt model-img
 	docker build --target runtime-gpu \
 		--build-arg TXT_MODEL_FILE=model_quantized.onnx \
 		--build-arg IMG_MODEL_FILE=model_quantized.onnx \
+		--build-arg RUST_BUILD_FEATURES="--features cuda" \
 		-t $(DOCKER_IMAGE):$(DOCKER_TAG)-gpu -t $(DOCKER_IMAGE):latest-gpu .
 
 # Build GPU image with full precision models
@@ -360,6 +361,7 @@ docker-build-gpu-full: model-txt model-img
 	docker build --target runtime-gpu \
 		--build-arg TXT_MODEL_FILE=model.onnx \
 		--build-arg IMG_MODEL_FILE=model.onnx \
+		--build-arg RUST_BUILD_FEATURES="--features cuda" \
 		-t $(DOCKER_IMAGE):$(DOCKER_TAG)-gpu-full -t $(DOCKER_IMAGE):latest-gpu-full .
 
 docker-run-gpu: docker-build-gpu
