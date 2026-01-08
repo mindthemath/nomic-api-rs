@@ -127,15 +127,45 @@ impl IntoResponse for Error {
 // Application State
 // ============================================================================
 
+/// Model variant detection
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ModelVariant {
+    /// Full precision (FP32) - supports batching
+    Full,
+    /// Quantized (INT8) - may have batching restrictions
+    Quantized,
+}
+
+impl ModelVariant {
+    /// Detect model variant from filename
+    fn from_path(path: &Path) -> Self {
+        let filename = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+
+        if filename.contains("quantized") || filename.contains("int8") || filename.contains("uint8")
+        {
+            ModelVariant::Quantized
+        } else {
+            ModelVariant::Full
+        }
+    }
+}
+
 /// Text embedding state (tokenizer + ONNX session)
 struct TextState {
     session: Mutex<Session>,
     tokenizer: Tokenizer,
+    variant: ModelVariant,
+    max_batch_size: usize,
 }
 
 /// Vision embedding state (ONNX session only, no tokenizer)
 pub struct VisionState {
     session: Mutex<Session>,
+    max_batch_size: usize,
 }
 
 /// Combined application state
@@ -163,9 +193,25 @@ impl AppState {
         let tokenizer_path = tokenizer.clone();
         let img_model_path = img_model.clone();
 
+        // Parse max batch sizes from environment (default: 64)
+        let txt_max_batch_size = std::env::var("TXT_MAX_BATCH_SIZE")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(64);
+
+        let img_max_batch_size = std::env::var("IMG_MAX_BATCH_SIZE")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(64);
+
         // Load text model if paths provided
         let text = if let (Some(model_path), Some(tok_path)) = (txt_model, tokenizer) {
-            info!("Loading text model: {:?}", model_path);
+            let variant = ModelVariant::from_path(&model_path);
+            info!(
+                "Loading text model: {:?} (variant: {:?})",
+                model_path, variant
+            );
+
             let model_bytes = std::fs::read(&model_path)
                 .map_err(|e| anyhow::anyhow!("Failed to read model file: {}", e))?;
 
@@ -178,9 +224,28 @@ impl AppState {
                 .map_err(|e| anyhow::anyhow!("Failed to load model: {}", e))?;
 
             let tokenizer = Tokenizer::from_file(&tok_path).map_err(|e| anyhow::anyhow!(e))?;
+
+            // For quantized text models, enforce batch_size=1
+            let effective_max_batch = if variant == ModelVariant::Quantized {
+                1
+            } else {
+                txt_max_batch_size
+            };
+
+            if variant == ModelVariant::Quantized {
+                info!("Text model is quantized - batching disabled (max_batch_size=1)");
+            } else {
+                info!(
+                    "Text model supports batching (max_batch_size={})",
+                    effective_max_batch
+                );
+            }
+
             Some(Arc::new(TextState {
                 session: Mutex::new(session),
                 tokenizer,
+                variant,
+                max_batch_size: effective_max_batch,
             }))
         } else {
             None
@@ -188,7 +253,12 @@ impl AppState {
 
         // Load vision model if path provided
         let vision = if let Some(model_path) = img_model {
-            info!("Loading vision model: {:?}", model_path);
+            let variant = ModelVariant::from_path(&model_path);
+            info!(
+                "Loading vision model: {:?} (variant: {:?})",
+                model_path, variant
+            );
+
             let model_bytes = std::fs::read(&model_path)
                 .map_err(|e| anyhow::anyhow!("Failed to read model file: {}", e))?;
 
@@ -200,8 +270,14 @@ impl AppState {
                 .commit_from_memory(&model_bytes)
                 .map_err(|e| anyhow::anyhow!("Failed to load model: {}", e))?;
 
+            info!(
+                "Vision model supports batching (max_batch_size={})",
+                img_max_batch_size
+            );
+
             Some(Arc::new(VisionState {
                 session: Mutex::new(session),
+                max_batch_size: img_max_batch_size,
             }))
         } else {
             None
@@ -422,6 +498,12 @@ struct InfoResponse {
     /// Vision model file path (if loaded)
     #[schema(example = "models/img/model_quantized.onnx")]
     img_model: Option<String>,
+    /// Maximum batch size for text embeddings
+    #[schema(example = 1)]
+    txt_max_batch_size: Option<usize>,
+    /// Maximum batch size for image embeddings
+    #[schema(example = 64)]
+    img_max_batch_size: Option<usize>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -717,6 +799,8 @@ async fn info_handler(State(state): State<AppState>) -> Json<InfoResponse> {
             .img_model_path
             .as_ref()
             .map(|p| p.to_string_lossy().to_string()),
+        txt_max_batch_size: state.text.as_ref().map(|t| t.max_batch_size),
+        img_max_batch_size: state.vision.as_ref().map(|v| v.max_batch_size),
     })
 }
 
@@ -805,6 +889,30 @@ async fn txt_batch_handler(
         return Err(Error(
             StatusCode::BAD_REQUEST,
             format!("dim must be between 1 and 768, got {}", req.dim),
+        ));
+    }
+
+    let batch_size = req.inputs.len();
+
+    // Fail fast if quantized model and batch_size > 1 (check this first for better error message)
+    if text_state.variant == ModelVariant::Quantized && batch_size > 1 {
+        return Err(Error(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "Batching is not supported for quantized text models. This model ({:?}) exhibits severe cross-sample interference when batched (~0.5 max diff, ~50-60%% cosine similarity). Use the full precision (FP32) model for batching, or process texts individually (batch_size=1).",
+                state.txt_model_path.as_ref().and_then(|p| p.file_name())
+            ),
+        ));
+    }
+
+    // Check batch size limit
+    if batch_size > text_state.max_batch_size {
+        return Err(Error(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "Batch size {} exceeds maximum allowed batch size of {}",
+                batch_size, text_state.max_batch_size
+            ),
         ));
     }
 
@@ -979,6 +1087,19 @@ async fn img_batch_handler(
         return Err(Error(
             StatusCode::BAD_REQUEST,
             format!("dim must be between 1 and 768, got {}", req.dim),
+        ));
+    }
+
+    let batch_size = req.contents.len();
+
+    // Check batch size limit
+    if batch_size > vision_state.max_batch_size {
+        return Err(Error(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "Batch size {} exceeds maximum allowed batch size of {}",
+                batch_size, vision_state.max_batch_size
+            ),
         ));
     }
 
@@ -1462,7 +1583,7 @@ pub fn embed_image(state: &VisionState, image: &DynamicImage) -> Result<Vec<f32>
 }
 
 /// Embed multiple images in a batch, returns list of 768-dim L2-normalized embeddings
-/// 
+///
 /// Note: FP32 models batch perfectly (no interference). Quantized models may show
 /// ~1% difference (cosine similarity ~0.99) due to quantization artifacts.
 pub fn embed_image_batch(
@@ -1487,12 +1608,7 @@ pub fn embed_image_batch(
         batch_tensor.extend_from_slice(&tensor);
     }
 
-    let input_shape = vec![
-        batch_size as i64,
-        3,
-        IMAGE_SIZE as i64,
-        IMAGE_SIZE as i64,
-    ];
+    let input_shape = vec![batch_size as i64, 3, IMAGE_SIZE as i64, IMAGE_SIZE as i64];
     let pixel_values: Value = Value::from_array((input_shape, batch_tensor))?.into();
 
     let inputs_vec = vec![(
