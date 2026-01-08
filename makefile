@@ -341,6 +341,9 @@ docker-build-cpu-full: model-txt model-img
 docker-run-cpu: docker-build-cpu
 	docker run -p 8080:8080 --dns 1.1.1.1 --dns 1.0.0.1 $(DOCKER_IMAGE):$(DOCKER_TAG)-cpu
 
+docker-run-cpu-full: docker-build-cpu-full
+	docker run -p 8080:8080 --dns 1.1.1.1 --dns 1.0.0.1 $(DOCKER_IMAGE):$(DOCKER_TAG)-cpu-full
+
 # Push image
 docker-push: docker-push-cpu
 
