@@ -254,16 +254,16 @@ impl AppState {
             Ok(builder)
         };
 
-        // Parse max batch sizes from environment (default: 64)
+        // Parse max batch sizes from environment (default: text=16, image=4)
         let txt_max_batch_size = std::env::var("TXT_MAX_BATCH_SIZE")
             .ok()
             .and_then(|v| v.parse().ok())
-            .unwrap_or(64);
+            .unwrap_or(16);
 
         let img_max_batch_size = std::env::var("IMG_MAX_BATCH_SIZE")
             .ok()
             .and_then(|v| v.parse().ok())
-            .unwrap_or(64);
+            .unwrap_or(4);
 
         // Load text model if paths provided
         let text = if let (Some(model_path), Some(tok_path)) = (txt_model, tokenizer) {
