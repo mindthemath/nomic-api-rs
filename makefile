@@ -72,16 +72,16 @@ check-models: check-txt check-img
 # ==============================================================================
 
 fmt:
-	cargo fmt
+	./bin/cargo fmt
 
 target/release/nomic-serve: src/main.rs Cargo.toml static/swagger-ui/index.html
-	cargo build --release
+	./bin/cargo build --release
 
 build: fmt target/release/nomic-serve
 	@echo "✓ Build complete"
 
 check:
-	@cargo check
+	@./bin/cargo check
 	@echo "✓ Check complete"
 
 lint:
