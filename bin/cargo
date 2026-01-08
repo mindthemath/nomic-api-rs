@@ -1,3 +1,12 @@
 #!/bin/sh
 docker build -f Dockerfile.cargo -t cargo-fmt .
-docker run --rm -v `pwd`/src:/app/src -v `pwd`/Cargo.toml:/app/Cargo.toml -w /app/ cargo-fmt cargo "$@"
+mkdir -p target
+docker run --rm \
+ -v `pwd`/src:/app/src \
+ -v `pwd`/Cargo.toml:/app/Cargo.toml \
+ -v `pwd`/Cargo.lock:/app/Cargo.lock \
+ -v `pwd`/static/swagger-ui/index.html:/app/static/swagger-ui/index.html \
+ -v `pwd`/target:/app/target \
+ -w /app/ \
+ cargo-fmt \
+ cargo "$@"

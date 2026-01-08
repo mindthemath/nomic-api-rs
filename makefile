@@ -80,6 +80,9 @@ target/release/nomic-serve: src/main.rs Cargo.toml static/swagger-ui/index.html
 build: fmt target/release/nomic-serve
 	@echo "✓ Build complete"
 
+build-gpu: fmt
+	./bin/cargo build --release --features cuda
+
 check:
 	@./bin/cargo check
 	@echo "✓ Check complete"
@@ -113,6 +116,9 @@ clean-results:
 # ==============================================================================
 
 run: build check-models
+	./target/release/nomic-serve
+
+run-gpu: build-gpu check-models
 	./target/release/nomic-serve
 
 run-benchmark: build
