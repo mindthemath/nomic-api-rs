@@ -8,8 +8,8 @@ default: run
         docker-build docker-build-cpu docker-push docker-push-cpu \
         model-txt model-txt-all model-img model-img-all check-txt check-img check-models \
         test-img test-img-batch test-multimodal test-img-stats run-stats \
-        test-vision-batch test-text-batch-fp32 test-text-batch-onnx-fp16 test-fp16-accuracy \
-        test-text-batch-transformers test-text-batch-half-precision \
+        test-vision-batch test-vision-variants test-text-batch-fp32 test-text-batch-onnx-fp16 \
+        test-fp16-accuracy test-text-batch-transformers test-text-batch-half-precision \
         benchmark-vision-batch benchmark-vision-batch-gpu benchmark-throughput
 
 # ==============================================================================
@@ -219,6 +219,11 @@ test-text-batch-onnx-fp16:
 test-fp16-accuracy:
 	@echo "Testing FP16 vs FP32 accuracy and batch sensitivity..."
 	@cd scripts && python3 test_fp16_vs_fp32_accuracy.py
+
+# Test vision model variants (FP32, FP16, quantized)
+test-vision-variants:
+	@echo "Testing vision model variants: FP32 vs FP16 vs Quantized..."
+	@cd scripts && python3 test_vision_model_variants.py
 
 # Test text model with PyTorch/transformers
 test-text-batch-transformers:
