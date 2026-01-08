@@ -35,15 +35,18 @@ COPY static ./static
 # Touch source files to ensure cargo sees them as newer than cached artifacts
 RUN touch src/main.rs && cargo build --release
 
+# Prepare ONNX Runtime libraries for copying to runtime stage
+# Copy libraries to a known location so we can reliably copy them later
+RUN mkdir -p /build/app/lib && \
+    (find /root/.cache/ort.pyke.io -name "libonnxruntime_providers*.so*" -exec cp -L {} /build/app/lib/ \; 2>/dev/null || true) && \
+    (find /build/target/release/deps -name "libonnxruntime_providers*.so*" -type l -exec sh -c 'cp -L "$$1" /build/app/lib/ 2>/dev/null || true' _ {} \; || true) && \
+    touch /build/app/lib/.keep  # Ensure directory exists even if no libraries found
+
+
 # ============================================================================
 # Stage 2: CPU Runtime
 # ============================================================================
 FROM debian:bookworm-slim AS runtime-cpu
-
-# Build arguments for model selection
-# Default to quantized models for smaller image size
-ARG TXT_MODEL_FILE=model_quantized.onnx
-ARG IMG_MODEL_FILE=model_quantized.onnx
 
 # Install runtime dependencies (only standard C libraries)
 # dumb-init handles signals properly (SIGTERM, SIGINT) for graceful shutdown
@@ -57,6 +60,11 @@ WORKDIR /app
 
 # Copy binary from builder
 COPY --from=builder /build/target/release/nomic-serve ./
+
+# Build arguments for model selection
+# Default to quantized models for smaller image size
+ARG TXT_MODEL_FILE=model_quantized.onnx
+ARG IMG_MODEL_FILE=model_quantized.onnx
 
 # Copy text model files (using build arg)
 COPY models/txt/${TXT_MODEL_FILE} models/txt/tokenizer.json models/txt/
@@ -80,3 +88,55 @@ EXPOSE 8080
 ENTRYPOINT ["dumb-init", "--"]
 CMD ["./nomic-serve"]
 
+
+# ============================================================================
+# Stage 3: GPU Runtime (CUDA)
+# ============================================================================
+FROM nvidia/cuda:12.1.0-runtime-ubuntu22.04 AS runtime-gpu
+
+# Install runtime dependencies
+# dumb-init handles signals properly (SIGTERM, SIGINT) for graceful shutdown
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    libssl3 \
+    dumb-init \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy binary from builder
+COPY --from=builder /build/target/release/nomic-serve ./
+
+# Copy ONNX Runtime CUDA providers libraries (if available)
+# These are needed for GPU mode; if not found, server falls back to CPU automatically
+# The directory always exists (created in builder stage) so COPY won't fail
+COPY --from=builder /build/app/lib/ /app/lib/
+
+# Build arguments for model selection
+# Default to quantized models for smaller image size
+ARG TXT_MODEL_FILE=model_quantized.onnx
+ARG IMG_MODEL_FILE=model_quantized.onnx
+
+# Copy text model files (using build arg)
+COPY models/txt/${TXT_MODEL_FILE} models/txt/tokenizer.json models/txt/
+
+# Copy vision model files (using build arg)
+COPY models/img/${IMG_MODEL_FILE} models/img/
+
+# GPU mode enabled by default
+# Set LD_LIBRARY_PATH to find ONNX Runtime providers
+# CORS: Set CORS_ORIGINS="https://example.com,https://app.example.com" to customize
+#       Set DISABLE_CORS=1 to allow all origins
+ENV PORT=8080
+ENV TOKENIZER=models/txt/tokenizer.json
+# Set model paths from build args
+ENV TXT_MODEL=models/txt/${TXT_MODEL_FILE}
+ENV IMG_MODEL=models/img/${IMG_MODEL_FILE}
+ENV USE_GPU=1
+ENV LD_LIBRARY_PATH=/app/lib:${LD_LIBRARY_PATH}
+
+EXPOSE 8080
+
+# Use dumb-init to handle signals properly (Ctrl-C, docker stop, etc.)
+ENTRYPOINT ["dumb-init", "--"]
+CMD ["./nomic-serve"]

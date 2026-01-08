@@ -10,7 +10,9 @@ default: run
         test-img test-img-batch test-multimodal test-img-stats run-stats \
         test-vision-batch test-vision-variants test-text-batch-fp32 test-text-batch-onnx-fp16 \
         test-fp16-accuracy test-text-batch-transformers test-text-batch-half-precision \
-        benchmark-vision-batch benchmark-vision-batch-gpu benchmark-throughput
+        benchmark-vision-batch benchmark-vision-batch-gpu benchmark-throughput \
+        docker-build-gpu docker-build-gpu-full docker-run-gpu docker-run-gpu-full \
+        docker-push-gpu # Add docker-push-gpu for completeness
 
 # ==============================================================================
 # Model Files
@@ -339,16 +341,44 @@ docker-build-cpu-full: model-txt model-img
 		-t $(DOCKER_IMAGE):$(DOCKER_TAG)-cpu-full -t $(DOCKER_IMAGE):latest-cpu-full .
 
 docker-run-cpu: docker-build-cpu
-	docker run -p 8080:8080 --dns 1.1.1.1 --dns 1.0.0.1 $(DOCKER_IMAGE):$(DOCKER_TAG)-cpu
+	docker run --rm -p 8080:8080 --dns 1.1.1.1 --dns 1.0.0.1 $(DOCKER_IMAGE):$(DOCKER_TAG)-cpu
 
 docker-run-cpu-full: docker-build-cpu-full
-	docker run -p 8080:8080 --dns 1.1.1.1 --dns 1.0.0.1 $(DOCKER_IMAGE):$(DOCKER_TAG)-cpu-full
+	docker run --rm -p 8080:8080 --dns 1.1.1.1 --dns 1.0.0.1 $(DOCKER_IMAGE):$(DOCKER_TAG)-cpu-full
+
+# Build GPU image with quantized models
+docker-build-gpu: model-txt model-img
+	@echo "Building GPU Docker image (quantized models)..."
+	docker build --target runtime-gpu \
+		--build-arg TXT_MODEL_FILE=model_quantized.onnx \
+		--build-arg IMG_MODEL_FILE=model_quantized.onnx \
+		-t $(DOCKER_IMAGE):$(DOCKER_TAG)-gpu -t $(DOCKER_IMAGE):latest-gpu .
+
+# Build GPU image with full precision models
+docker-build-gpu-full: model-txt model-img
+	@echo "Building GPU Docker image (full precision models)..."
+	docker build --target runtime-gpu \
+		--build-arg TXT_MODEL_FILE=model.onnx \
+		--build-arg IMG_MODEL_FILE=model.onnx \
+		-t $(DOCKER_IMAGE):$(DOCKER_TAG)-gpu-full -t $(DOCKER_IMAGE):latest-gpu-full .
+
+docker-run-gpu: docker-build-gpu
+	docker run --rm -it --gpus all -p 8080:8080 --dns 1.1.1.1 --dns 1.0.0.1 $(DOCKER_IMAGE):$(DOCKER_TAG)-gpu
+
+docker-run-gpu-full: docker-build-gpu-full
+	docker run --rm -it --gpus all -p 8080:8080 --dns 1.1.1.1 --dns 1.0.0.1 $(DOCKER_IMAGE):$(DOCKER_TAG)-gpu-full
 
 # Push image
-docker-push: docker-push-cpu
+docker-push: docker-push-cpu docker-push-gpu # Include GPU push
 
 # Push CPU image
 docker-push-cpu: docker-build-cpu
 	@echo "Pushing CPU image to DockerHub..."
 	docker push $(DOCKER_IMAGE):$(DOCKER_TAG)-cpu
 	docker push $(DOCKER_IMAGE):latest-cpu
+
+# Push GPU image
+docker-push-gpu: docker-build-gpu
+	@echo "Pushing GPU image to DockerHub..."
+	docker push $(DOCKER_IMAGE):$(DOCKER_TAG)-gpu
+	docker push $(DOCKER_IMAGE):latest-gpu
