@@ -113,6 +113,19 @@ clean-results:
 run: build check-models
 	./target/release/nomic-serve
 
+run-benchmark: build
+	@echo "Starting server with high max batch sizes for benchmarking..."
+	@echo "Using FP32 models to enable batching..."
+	@if [ ! -f "models/txt/model.onnx" ]; then \
+		echo "❌ FP32 text model not found. Run: make model-txt"; \
+		exit 1; \
+	fi
+	@if [ ! -f "models/img/model.onnx" ]; then \
+		echo "❌ FP32 vision model not found. Run: make model-img"; \
+		exit 1; \
+	fi
+	TXT_MODEL=models/txt/model.onnx IMG_MODEL=models/img/model.onnx TXT_MAX_BATCH_SIZE=2056 IMG_MAX_BATCH_SIZE=2056 ./target/release/nomic-serve
+
 run-full: build check-models
 	AVERAGING=arithmetic TXT_MODEL=models/txt/model.onnx IMG_MODEL=models/img/model.onnx ./target/release/nomic-serve
 
@@ -250,6 +263,21 @@ benchmark-throughput:
 	@echo "Benchmarking API server throughput..."
 	@echo "Make sure server is running: make run"
 	@cd scripts && python3 benchmark_throughput.py
+
+# Benchmark batch size performance (comprehensive)
+benchmark-batch-performance:
+	@echo "Benchmarking batch size performance..."
+	@echo "Make sure server is running with high max batch size:"
+	@echo "  make run-benchmark"
+	@cd scripts && python3 benchmark_batch_performance.py --max-batch-size 2056
+
+benchmark-batch-performance-img:
+	@echo "Benchmarking image batch size performance..."
+	@cd scripts && python3 benchmark_batch_performance.py --endpoint img --max-batch-size 2056
+
+benchmark-batch-performance-txt:
+	@echo "Benchmarking text batch size performance..."
+	@cd scripts && python3 benchmark_batch_performance.py --endpoint txt --max-batch-size 2056
 
 # Test Rust vision batching implementation via API
 test-rust-batch:
