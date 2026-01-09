@@ -119,7 +119,7 @@ run: build check-models
 	./target/release/nomic-serve
 
 run-gpu: build-gpu check-models
-	./target/release/nomic-serve
+	USE_GPU=true ./target/release/nomic-serve
 
 run-benchmark: build
 	@echo "Starting server with high max batch sizes for benchmarking..."
