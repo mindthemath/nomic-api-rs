@@ -185,6 +185,7 @@ pub struct AppState {
 }
 
 impl AppState {
+    #[allow(unused_variables)]
     async fn new(
         txt_model: Option<PathBuf>,
         tokenizer: Option<PathBuf>,
@@ -218,7 +219,14 @@ impl AppState {
         }
 
         let session_builder_factory = || -> anyhow::Result<SessionBuilder> {
+            #[cfg(feature = "cuda")]
             let mut builder = SessionBuilder::new()
+                .map_err(|e| anyhow::anyhow!("Failed to create session builder: {}", e))?
+                .with_optimization_level(GraphOptimizationLevel::Level3)
+                .map_err(|e| anyhow::anyhow!("Failed to set optimization level: {}", e))?;
+
+            #[cfg(not(feature = "cuda"))]
+            let builder = SessionBuilder::new()
                 .map_err(|e| anyhow::anyhow!("Failed to create session builder: {}", e))?
                 .with_optimization_level(GraphOptimizationLevel::Level3)
                 .map_err(|e| anyhow::anyhow!("Failed to set optimization level: {}", e))?;
