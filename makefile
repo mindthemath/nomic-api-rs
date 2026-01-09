@@ -371,10 +371,14 @@ docker-build-gpu-full: model-txt model-img
 		-t $(DOCKER_IMAGE):$(DOCKER_TAG)-gpu-full -t $(DOCKER_IMAGE):latest-gpu-full .
 
 docker-run-gpu: docker-build-gpu
-	docker run --rm -it --gpus all -p 8080:8080 --dns 1.1.1.1 --dns 1.0.0.1 $(DOCKER_IMAGE):$(DOCKER_TAG)-gpu
+	docker run --rm -it --gpus all -p 8080:8080 --dns 1.1.1.1 --dns 1.0.0.1 \
+		-e TXT_MAX_BATCH_SIZE=1024 -e IMG_MAX_BATCH_SIZE=256 \
+		$(DOCKER_IMAGE):$(DOCKER_TAG)-gpu
 
 docker-run-gpu-full: docker-build-gpu-full
-	docker run --rm -it --gpus all -p 8080:8080 --dns 1.1.1.1 --dns 1.0.0.1 $(DOCKER_IMAGE):$(DOCKER_TAG)-gpu-full
+	docker run --rm -it --gpus all -p 8080:8080 --dns 1.1.1.1 --dns 1.0.0.1 \
+		-e TXT_MAX_BATCH_SIZE=1024 -e IMG_MAX_BATCH_SIZE=256 \
+		$(DOCKER_IMAGE):$(DOCKER_TAG)-gpu-full
 
 # Push image
 docker-push: docker-push-cpu docker-push-gpu # Include GPU push
