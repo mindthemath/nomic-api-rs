@@ -116,7 +116,7 @@ clean-results:
 # ==============================================================================
 
 run: build check-models
-	./target/release/nomic-serve
+	IMG_MAX_BATCH_SIZE=256 TXT_MAX_BATCH_SIZE=2056 ./target/release/nomic-serve
 
 run-gpu: build-gpu check-models
 	USE_GPU=true ./target/release/nomic-serve
@@ -135,7 +135,8 @@ run-benchmark: build
 	TXT_MODEL=models/txt/model.onnx IMG_MODEL=models/img/model.onnx TXT_MAX_BATCH_SIZE=1024 IMG_MAX_BATCH_SIZE=128 ./target/release/nomic-serve
 
 run-full: build check-models
-	AVERAGING=arithmetic TXT_MODEL=models/txt/model.onnx IMG_MODEL=models/img/model.onnx ./target/release/nomic-serve
+	AVERAGING=arithmetic TXT_MODEL=models/txt/model.onnx IMG_MODEL=models/img/model.onnx IMG_MAX_BATCH_SIZE=256 TXT_MAX_BATCH_SIZE=2056 ./target/release/nomic-serve
+
 
 # Run server (image-stats is now always included, no model files required for /img/stats)
 run-stats: build
@@ -324,7 +325,7 @@ test-models: build model-txt-all
 # Docker
 # ==============================================================================
 
-DOCKER_IMAGE = mindthemath/nomic-embed-v1.5-rs
+DOCKER_IMAGE = litcr.io/lit-container/mindthemath/embedding/nomic-embed-v1.5-rs
 DOCKER_TAG ?= latest
 
 # Build CPU image
@@ -372,12 +373,12 @@ docker-build-gpu-full: model-txt model-img
 
 docker-run-gpu: docker-build-gpu
 	docker run --rm -it --gpus all -p 8080:8080 --dns 1.1.1.1 --dns 1.0.0.1 \
-		-e TXT_MAX_BATCH_SIZE=1024 -e IMG_MAX_BATCH_SIZE=256 \
+		-e TXT_MAX_BATCH_SIZE=2056 -e IMG_MAX_BATCH_SIZE=256 \
 		$(DOCKER_IMAGE):$(DOCKER_TAG)-gpu
 
 docker-run-gpu-full: docker-build-gpu-full
 	docker run --rm -it --gpus all -p 8080:8080 --dns 1.1.1.1 --dns 1.0.0.1 \
-		-e TXT_MAX_BATCH_SIZE=1024 -e IMG_MAX_BATCH_SIZE=256 \
+		-e TXT_MAX_BATCH_SIZE=2056 -e IMG_MAX_BATCH_SIZE=256 \
 		$(DOCKER_IMAGE):$(DOCKER_TAG)-gpu-full
 
 # Push image
