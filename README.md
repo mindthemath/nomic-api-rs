@@ -411,7 +411,9 @@ Total: ~263MB
 
 **CPU inference**: Standard C libraries (glibc, libstdc++). No GPU drivers or CUDA needed.
 
-**GPU inference**: NVIDIA CUDA drivers and CUDA toolkit. The binary is built with CUDA support enabled by default (can be disabled by removing `"cuda"` feature from `Cargo.toml`).
+**GPU inference (CUDA)**: NVIDIA CUDA drivers and CUDA toolkit. The binary is built with CUDA support enabled by default (can be disabled by removing `"cuda"` feature from `Cargo.toml`).
+
+**GPU inference (CoreML/Metal)**: Apple Metal acceleration via CoreML execution provider. Available on macOS 10.15+ and iOS 13+. Build with `--features coreml` to enable. CoreML automatically uses Metal for GPU acceleration on supported Apple devices.
 
 ### Docker
 
@@ -584,6 +586,54 @@ LD_LIBRARY_PATH="$ORT_LIB_DIR:$LD_LIBRARY_PATH" USE_GPU=1 ./target/release/nomic
 ```
 
 **Note**: The `make test-models-gpu` script automatically finds and sets `LD_LIBRARY_PATH` to point to the ONNX Runtime CUDA providers library. If you run the server manually with `USE_GPU=1`, you may need to set `LD_LIBRARY_PATH` yourself.
+
+### Apple Metal / CoreML Support
+
+This server supports Apple Metal GPU acceleration via ONNX Runtime's CoreML execution provider. CoreML leverages Apple's Metal framework for GPU acceleration on macOS and iOS devices.
+
+**Requirements:**
+- macOS 10.15+ or iOS 13+
+- Build with `--features coreml` flag: `cargo build --release --features coreml` or `make build-coreml`
+- Apple device with Metal-capable GPU (most modern Macs and iOS devices)
+
+**Usage:**
+```bash
+# Build with CoreML support
+make build-coreml
+
+# Run with GPU acceleration (uses Metal via CoreML)
+make run-coreml
+
+# Or manually:
+USE_GPU=1 ./target/release/nomic-serve
+```
+
+**How it works:**
+- CoreML execution provider is automatically selected on macOS/iOS when `USE_GPU=1` is set
+- CoreML uses Metal under the hood for GPU acceleration
+- Falls back to CPU automatically if CoreML is unavailable
+- CoreML can utilize CPU, GPU (Metal), or Neural Engine depending on the device and model
+
+**Performance:**
+- On Macs with dedicated GPUs: Significant speedup (2-4x) compared to CPU
+- On Macs with Neural Engine: May use Neural Engine for optimized operations
+- On iOS devices: Uses GPU or Neural Engine as available
+
+**Platform Notes:**
+- CoreML only works on Apple platforms (macOS/iOS)
+- On non-Apple platforms, the server will use CUDA (if available) or CPU
+- Docker on macOS does not support Metal passthrough, so CoreML won't work in Docker containers on macOS
+
+**Building:**
+```bash
+# Build with CoreML feature
+cargo build --release --features coreml
+
+# Or use makefile target
+make build-coreml
+```
+
+**Note**: The `ort` crate with `coreml` feature will automatically download CoreML libraries during build, similar to CUDA libraries.
 
 ## Model Info
 

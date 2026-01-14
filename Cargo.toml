@@ -6,6 +6,7 @@ edition = "2021"
 [features]
 default = []
 cuda = ["ort/cuda"]
+coreml = ["ort/coreml"]
 
 [dependencies]
 anyhow        = "1"

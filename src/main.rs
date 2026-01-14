@@ -30,10 +30,12 @@ use axum::{
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use image::{DynamicImage, ImageReader};
 use ndarray::ShapeError;
+// CPUExecutionProvider and ExecutionProviderDispatch are always available
 #[cfg(feature = "cuda")]
-use ort::execution_providers::{
-    CPUExecutionProvider, CUDAExecutionProvider, ExecutionProviderDispatch,
-};
+use ort::execution_providers::CUDAExecutionProvider;
+#[cfg(feature = "coreml")]
+use ort::execution_providers::CoreMLExecutionProvider;
+use ort::execution_providers::{CPUExecutionProvider, ExecutionProviderDispatch};
 use ort::{
     session::{
         builder::{GraphOptimizationLevel, SessionBuilder},
@@ -200,12 +202,13 @@ impl AppState {
         let tokenizer_path = tokenizer.clone();
         let img_model_path = img_model.clone();
 
-        #[cfg(feature = "cuda")]
+        // Determine if GPU is enabled based on available features
+        #[cfg(any(feature = "cuda", feature = "coreml"))]
         let gpu_enabled = use_gpu;
-        #[cfg(not(feature = "cuda"))]
+        #[cfg(not(any(feature = "cuda", feature = "coreml")))]
         let gpu_enabled = false;
 
-        // Verify CUDA is available if requested
+        // Verify GPU providers are available if requested
         #[cfg(feature = "cuda")]
         if use_gpu {
             // Check if CUDA libraries are available
@@ -218,45 +221,115 @@ impl AppState {
             }
         }
 
+        #[cfg(feature = "coreml")]
+        if use_gpu {
+            // CoreML is available on macOS/iOS
+            #[cfg(target_os = "macos")]
+            {
+                info!("CoreML execution provider available on macOS (uses Metal for GPU acceleration)");
+            }
+            #[cfg(target_os = "ios")]
+            {
+                info!("CoreML execution provider available on iOS (uses Metal/Neural Engine)");
+            }
+            #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+            {
+                warn!("CoreML feature enabled but not on macOS/iOS. CoreML will not be used.");
+            }
+        }
+
         let session_builder_factory = || -> anyhow::Result<SessionBuilder> {
-            #[cfg(feature = "cuda")]
             let mut builder = SessionBuilder::new()
                 .map_err(|e| anyhow::anyhow!("Failed to create session builder: {}", e))?
                 .with_optimization_level(GraphOptimizationLevel::Level3)
                 .map_err(|e| anyhow::anyhow!("Failed to set optimization level: {}", e))?;
 
-            #[cfg(not(feature = "cuda"))]
-            let builder = SessionBuilder::new()
-                .map_err(|e| anyhow::anyhow!("Failed to create session builder: {}", e))?
-                .with_optimization_level(GraphOptimizationLevel::Level3)
-                .map_err(|e| anyhow::anyhow!("Failed to set optimization level: {}", e))?;
-
-            #[cfg(feature = "cuda")]
             if use_gpu {
-                // Use CUDA provider first, with CPU as fallback
-                // ONNX Runtime will use GPU for supported operations and fall back to CPU for unsupported ones
-                let cuda_provider: ExecutionProviderDispatch =
-                    CUDAExecutionProvider::default().into();
-                let cpu_provider: ExecutionProviderDispatch =
-                    CPUExecutionProvider::default().into();
-                // Set both providers - CUDA first (higher priority), CPU as fallback
-                builder = builder.with_execution_providers([cuda_provider, cpu_provider])
-                    .map_err(|e| {
-                        warn!("Failed to initialize CUDA execution provider: {}. This may indicate CUDA is not available.", e);
-                        anyhow::anyhow!("CUDA execution provider failed: {}", e)
-                    })?;
-                info!("CUDA execution provider initialized successfully (with CPU fallback).");
+                #[cfg(all(feature = "coreml", any(target_os = "macos", target_os = "ios")))]
+                {
+                    // Use CoreML provider on macOS/iOS (uses Metal under the hood)
+                    let coreml_provider: ExecutionProviderDispatch =
+                        CoreMLExecutionProvider::default().into();
+                    let cpu_provider: ExecutionProviderDispatch =
+                        CPUExecutionProvider::default().into();
+                    // Set both providers - CoreML first (higher priority), CPU as fallback
+                    builder = match builder
+                        .with_execution_providers([coreml_provider, cpu_provider])
+                    {
+                        Ok(b) => {
+                            info!("CoreML execution provider initialized successfully (with CPU fallback). CoreML uses Metal for GPU acceleration on Apple devices.");
+                            b
+                        }
+                        Err(e) => {
+                            warn!("Failed to initialize CoreML execution provider: {}. This may indicate CoreML is not available. Falling back to CPU.", e);
+                            // Recreate builder for CPU fallback
+                            let fallback_builder = SessionBuilder::new()
+                                .map_err(|e| {
+                                    anyhow::anyhow!("Failed to create session builder: {}", e)
+                                })?
+                                .with_optimization_level(GraphOptimizationLevel::Level3)
+                                .map_err(|e| {
+                                    anyhow::anyhow!("Failed to set optimization level: {}", e)
+                                })?;
+                            let cpu_provider: ExecutionProviderDispatch =
+                                CPUExecutionProvider::default().into();
+                            fallback_builder
+                                .with_execution_providers([cpu_provider])
+                                .map_err(|e| {
+                                    anyhow::anyhow!("Failed to set CPU execution provider: {}", e)
+                                })?
+                        }
+                    };
+                }
+
+                #[cfg(all(
+                    feature = "cuda",
+                    not(all(feature = "coreml", any(target_os = "macos", target_os = "ios")))
+                ))]
+                {
+                    // Use CUDA provider on non-Apple platforms (or if CoreML not available)
+                    let cuda_provider: ExecutionProviderDispatch =
+                        CUDAExecutionProvider::default().into();
+                    let cpu_provider: ExecutionProviderDispatch =
+                        CPUExecutionProvider::default().into();
+                    // Set both providers - CUDA first (higher priority), CPU as fallback
+                    builder = builder.with_execution_providers([cuda_provider, cpu_provider])
+                        .map_err(|e| {
+                            warn!("Failed to initialize CUDA execution provider: {}. This may indicate CUDA is not available.", e);
+                            anyhow::anyhow!("CUDA execution provider failed: {}", e)
+                        })?;
+                    info!("CUDA execution provider initialized successfully (with CPU fallback).");
+                }
+
+                #[cfg(not(any(
+                    all(feature = "coreml", any(target_os = "macos", target_os = "ios")),
+                    feature = "cuda"
+                )))]
+                {
+                    warn!("USE_GPU=1 but no GPU execution provider available. Using CPU.");
+                    let cpu_provider: ExecutionProviderDispatch =
+                        CPUExecutionProvider::default().into();
+                    builder = builder
+                        .with_execution_providers([cpu_provider])
+                        .map_err(|e| {
+                            anyhow::anyhow!("Failed to set CPU execution provider: {}", e)
+                        })?;
+                }
             } else {
-                info!("GPU not requested (USE_GPU environment variable not '1'). Using CPU.");
+                // GPU not requested, use CPU only
+                #[cfg(any(feature = "cuda", feature = "coreml"))]
+                {
+                    info!("GPU not requested (USE_GPU environment variable not '1'). Using CPU.");
+                }
+                #[cfg(not(any(feature = "cuda", feature = "coreml")))]
+                {
+                    info!("Using CPU (default).");
+                }
                 let cpu_provider: ExecutionProviderDispatch =
                     CPUExecutionProvider::default().into();
                 builder = builder
                     .with_execution_providers([cpu_provider])
                     .map_err(|e| anyhow::anyhow!("Failed to set CPU execution provider: {}", e))?;
-            }
-            #[cfg(not(feature = "cuda"))]
-            {
-                info!("CUDA feature not enabled. Using CPU (default).");
             }
 
             Ok(builder)
@@ -303,6 +376,12 @@ impl AppState {
                     warn!("nvidia-smi not available - CUDA may not be working");
                 }
                 info!("Text model loaded with CUDA provider configured.");
+                info!("If GPU is not used, ONNX Runtime may be falling back to CPU silently.");
+            }
+
+            #[cfg(all(feature = "coreml", any(target_os = "macos", target_os = "ios")))]
+            if use_gpu {
+                info!("Text model loaded with CoreML provider configured (uses Metal for GPU acceleration).");
                 info!("If GPU is not used, ONNX Runtime may be falling back to CPU silently.");
             }
 
@@ -354,6 +433,12 @@ impl AppState {
             #[cfg(feature = "cuda")]
             if use_gpu {
                 info!("Vision model loaded with CUDA provider configured.");
+                info!("If GPU is not used, ONNX Runtime may be falling back to CPU silently.");
+            }
+
+            #[cfg(all(feature = "coreml", any(target_os = "macos", target_os = "ios")))]
+            if use_gpu {
+                info!("Vision model loaded with CoreML provider configured (uses Metal for GPU acceleration).");
                 info!("If GPU is not used, ONNX Runtime may be falling back to CPU silently.");
             }
 
@@ -741,7 +826,14 @@ async fn main() {
     let text_status = if state.text.is_some() { "✓" } else { "✗" };
     let vision_status = if state.vision.is_some() { "✓" } else { "✗" };
     let gpu_status = if state.gpu_enabled {
-        "✓ (CUDA)"
+        #[cfg(all(feature = "coreml", any(target_os = "macos", target_os = "ios")))]
+        {
+            "✓ (CoreML/Metal)"
+        }
+        #[cfg(not(all(feature = "coreml", any(target_os = "macos", target_os = "ios"))))]
+        {
+            "✓ (CUDA)"
+        }
     } else {
         "✗ (CPU)"
     };

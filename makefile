@@ -12,7 +12,7 @@ default: run
         test-fp16-accuracy test-text-batch-transformers test-text-batch-half-precision \
         benchmark-vision-batch benchmark-vision-batch-gpu benchmark-throughput \
         docker-build-gpu docker-build-gpu-full docker-run-gpu docker-run-gpu-full \
-        docker-push-gpu # Add docker-push-gpu for completeness
+        docker-push-gpu build-gpu build-coreml run-gpu run-coreml
 
 # ==============================================================================
 # Model Files
@@ -72,19 +72,22 @@ check-models: check-txt check-img
 # ==============================================================================
 
 fmt:
-	./bin/cargo fmt
+	cargo fmt
 
 target/release/nomic-serve: src/main.rs Cargo.toml static/swagger-ui/index.html
-	./bin/cargo build --release
+	cargo build --release
 
 build: fmt target/release/nomic-serve
 	@echo "✓ Build complete"
 
 build-gpu: fmt
-	./bin/cargo build --release --features cuda
+	cargo build --release --features cuda
+
+build-coreml: fmt
+	cargo build --release --features coreml
 
 check:
-	@./bin/cargo check
+	@cargo check
 	@echo "✓ Check complete"
 
 lint:
@@ -119,6 +122,9 @@ run: build check-models
 	IMG_MAX_BATCH_SIZE=256 TXT_MAX_BATCH_SIZE=2056 ./target/release/nomic-serve
 
 run-gpu: build-gpu check-models
+	USE_GPU=true ./target/release/nomic-serve
+
+run-coreml: build-coreml check-models
 	USE_GPU=true ./target/release/nomic-serve
 
 run-benchmark: build
