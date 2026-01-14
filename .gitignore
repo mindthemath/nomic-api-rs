@@ -31,3 +31,4 @@ test_images/
 results/
 *.tar.gz
 
+.cspell
