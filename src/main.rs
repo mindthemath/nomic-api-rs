@@ -668,7 +668,7 @@ async fn main() {
         .or_else(|_| std::env::var("MODEL"))
         .map(PathBuf::from)
         .map(resolve_model_path)
-        .unwrap_or_else(|_| resolve_model_path("models/txt/model_quantized.onnx"));
+        .unwrap_or_else(|_| resolve_model_path("models/txt/model.onnx"));
 
     let tok_path = std::env::var("TOKENIZER")
         .map(PathBuf::from)
@@ -679,7 +679,7 @@ async fn main() {
     let img_model_path = std::env::var("IMG_MODEL")
         .map(PathBuf::from)
         .map(resolve_model_path)
-        .unwrap_or_else(|_| resolve_model_path("models/img/model_quantized.onnx"));
+        .unwrap_or_else(|_| resolve_model_path("models/img/model.onnx"));
 
     let port: u16 = std::env::var("PORT")
         .ok()
