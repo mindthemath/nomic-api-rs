@@ -542,6 +542,7 @@ struct TextEmbedRequest {
 struct TextBatchRequest {
     /// List of texts to embed
     #[schema(example = json!(["Hello world", "Goodbye world"]))]
+    #[serde(alias = "input")]
     inputs: Vec<String>,
     /// Embedding dimension (1-768)
     #[serde(default = "default_dim")]
@@ -596,9 +597,10 @@ struct TextBatchResponse {
 
 #[derive(Deserialize, ToSchema)]
 struct ImageEmbedRequest {
-    /// Image content: URL (http/https), data URL (data:image/...), or raw base64
+    /// Image input: URL (http/https), data URL (data:image/...), or raw base64
     #[schema(example = "https://picsum.photos/400/300")]
-    content: String,
+    #[serde(alias = "content")]
+    input: String,
     /// Embedding dimension (1-768)
     #[serde(default = "default_dim")]
     #[schema(example = 768, minimum = 1, maximum = 768)]
@@ -607,9 +609,11 @@ struct ImageEmbedRequest {
 
 #[derive(Deserialize, ToSchema)]
 struct ImageBatchRequest {
-    /// List of image contents (URLs or base64)
+    /// List of image inputs (URLs or base64)
     #[schema(example = json!(["https://picsum.photos/200/200", "https://picsum.photos/300/400", "https://picsum.photos/300/400"]))]
-    contents: Vec<String>,
+    #[serde(alias = "contents")]
+    #[serde(alias = "input")]
+    inputs: Vec<String>,
     /// Embedding dimension (1-768)
     #[serde(default = "default_dim")]
     #[schema(example = 768, minimum = 1, maximum = 768)]
@@ -875,6 +879,7 @@ async fn main() {
         .route("/query", post(txt_query_handler))
         // OpenAPI
         .route("/openapi.json", get(openapi_handler))
+        .route("/docs/openapi.json", get(openapi_handler))
         .route("/docs", get(docs_handler))
         .layer(DefaultBodyLimit::max(body_limit_mb * 1024 * 1024))
         .layer(TraceLayer::new_for_http())
@@ -1239,7 +1244,7 @@ async fn img_embed_handler(
     }
 
     let decode_start = Instant::now();
-    let image = decode_image(&req.content).await?;
+    let image = decode_image(&req.input).await?;
     let decode_time = decode_start.elapsed();
 
     let inference_start = Instant::now();
@@ -1295,7 +1300,7 @@ async fn img_batch_handler(
         ));
     }
 
-    let batch_size = req.contents.len();
+    let batch_size = req.inputs.len();
 
     // Check batch size limit
     if batch_size > vision_state.max_batch_size {
@@ -1309,9 +1314,9 @@ async fn img_batch_handler(
     }
 
     // Decode all images first
-    let mut images = Vec::with_capacity(req.contents.len());
-    for content in &req.contents {
-        images.push(decode_image(content).await?);
+    let mut images = Vec::with_capacity(req.inputs.len());
+    for input in &req.inputs {
+        images.push(decode_image(input).await?);
     }
 
     // Batch inference (more efficient than sequential)

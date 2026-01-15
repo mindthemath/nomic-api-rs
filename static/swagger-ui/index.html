@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -97,10 +98,12 @@
                 transform: rotate(0deg) scale(1);
                 opacity: 1;
             }
+
             50% {
                 transform: rotate(180deg) scale(0.5);
                 opacity: 0.3;
             }
+
             100% {
                 transform: rotate(360deg) scale(1);
                 opacity: 1;
@@ -119,7 +122,39 @@
             margin: 0.25rem 0 0;
             font-size: 0.875rem;
             color: var(--text-muted);
-            max-width: 70ch;
+            max-width: min(100ch, calc(100vw - 300px));
+        }
+
+        .header-text p code {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+            background: rgba(45, 212, 191, 0.12);
+            color: var(--primary);
+            padding: 0.15rem 0.35rem;
+            border-radius: 4px;
+            font-size: 0.85em;
+            border: 1px solid rgba(45, 212, 191, 0.2);
+        }
+
+        .header-text p code a {
+            color: inherit;
+            text-decoration: none;
+            transition: opacity 0.2s ease;
+        }
+
+        .header-text p code a:hover {
+            opacity: 0.8;
+            text-decoration: underline;
+        }
+
+        .header-text p a {
+            color: var(--primary);
+            text-decoration: none;
+            transition: all 0.2s ease;
+        }
+
+        .header-text p a:hover {
+            color: var(--primary-strong);
+            text-decoration: underline;
         }
 
         .header-badge {
@@ -132,6 +167,20 @@
             font-size: 0.75rem;
             font-weight: 500;
             letter-spacing: 0.02em;
+        }
+
+        .header-link {
+            margin-left: 0.75rem;
+            color: var(--text-muted);
+            text-decoration: none;
+            font-size: 0.75rem;
+            opacity: 0.6;
+            transition: opacity 0.2s ease;
+        }
+
+        .header-link:hover {
+            opacity: 1;
+            color: var(--primary);
         }
 
         /* Swagger UI Overrides */
@@ -169,6 +218,7 @@
             padding: 1rem;
             backdrop-filter: blur(6px);
         }
+
         /* "Server" header strip + inner bar */
         .swagger-ui .scheme-container .schemes,
         .swagger-ui .scheme-container .auth-wrapper {
@@ -176,6 +226,7 @@
             border: 1px solid var(--border);
             border-radius: 10px;
         }
+
         .swagger-ui .scheme-container .schemes-title,
         .swagger-ui .scheme-container label {
             color: var(--text) !important;
@@ -246,6 +297,7 @@
             border-bottom: 1px solid var(--border) !important;
             box-shadow: none !important;
         }
+
         .swagger-ui .opblock-section-header label,
         .swagger-ui .opblock-section-header h4,
         .swagger-ui .opblock-section-header .tab-item,
@@ -383,6 +435,7 @@
             border-bottom: 1px solid rgba(232, 237, 247, 0.08) !important;
             padding: 0.5rem 0 !important;
         }
+
         .swagger-ui .json-schema-2020-12-property:last-child {
             border-bottom: none !important;
         }
@@ -393,6 +446,7 @@
             font-weight: 500;
             letter-spacing: 0.01em;
         }
+
         .swagger-ui .json-schema-2020-12-keyword__value,
         .swagger-ui .json-schema-2020-12__description {
             color: var(--text) !important;
@@ -408,6 +462,7 @@
             font-size: 0.8rem;
             font-weight: 500;
         }
+
         .swagger-ui .json-schema-2020-12-expand-deep-button:hover {
             background: rgba(45, 212, 191, 0.25) !important;
             border-color: rgba(45, 212, 191, 0.4) !important;
@@ -418,6 +473,7 @@
             color: var(--text) !important;
             background: transparent !important;
         }
+
         .swagger-ui .json-schema-2020-12-accordion__children {
             background: transparent !important;
         }
@@ -443,20 +499,20 @@
             stroke: var(--text-muted) !important;
             color: var(--text-muted) !important;
         }
-        
+
         /* Target SVG elements directly in model sections */
         .swagger-ui section.model svg,
         .swagger-ui section.models svg {
             fill: var(--text-muted) !important;
             stroke: var(--text-muted) !important;
         }
-        
+
         /* Target arrow SVGs by viewBox attribute (Swagger UI arrow icons) */
         .swagger-ui svg[viewBox="0 0 20 20"] {
             fill: var(--text-muted) !important;
             stroke: var(--text-muted) !important;
         }
-        
+
         /* Override any inline styles on arrow buttons */
         .swagger-ui button svg[viewBox="0 0 20 20"] {
             fill: var(--text-muted) !important;
@@ -518,6 +574,7 @@
         }
     </style>
 </head>
+
 <body>
     <div class="header">
         <div class="header-icon" id="header-icon">
@@ -525,32 +582,38 @@
         </div>
         <div class="header-text">
             <h1>nomic-serve</h1>
-            <p>Text embedding API powered by nomic-embed-text-v1.5</p>
+            <p>
+                txt2vec. img2vec. EXIF data + color stats. 1 API, 3 functions. 
+                Made with Rust by <a href="https://mindthemath.com">Mind the Math</a>.
+                <br>
+                Powered by <code><a href="https://huggingface.co/nomic-ai/nomic-embed-text-v1.5" target="_blank" rel="noopener noreferrer">nomic-embed-text-v1.5</a></code> + <code><a href="https://huggingface.co/nomic-ai/nomic-embed-vision-v1.5" target="_blank" rel="noopener noreferrer">nomic-embed-vision-v1.5</a></code>.
+            </p>
         </div>
         <span class="header-badge">v0.1.0</span>
+        <a href="/docs/openapi.json" class="header-link" title="OpenAPI JSON specification">openapi.json</a>
     </div>
     <div id="swagger-ui"></div>
     <script src="https://unpkg.com/swagger-ui-dist@5.17.14/swagger-ui-bundle.js"></script>
     <script>
         // Header icon emoji cycling
-        (function() {
+        (function () {
             const headerIcon = document.getElementById('header-icon');
             const emojiSpan = headerIcon.querySelector('.emoji');
             const emojis = ['👀', '📄']; // Eyes (vision) and Document (text)
             let currentIndex = -1; // Start at -1 so first click goes to index 0 (eyeball)
 
-            headerIcon.addEventListener('click', function() {
+            headerIcon.addEventListener('click', function () {
                 // Cycle to next emoji
                 currentIndex = (currentIndex + 1) % emojis.length;
-                
+
                 // Add animation class
                 headerIcon.classList.add('emoji-change');
-                
+
                 // Update emoji after a brief delay for smooth transition
                 setTimeout(() => {
                     emojiSpan.textContent = emojis[currentIndex];
                 }, 200);
-                
+
                 // Remove animation class after animation completes
                 setTimeout(() => {
                     headerIcon.classList.remove('emoji-change');
@@ -579,6 +642,5 @@
         };
     </script>
 </body>
+
 </html>
-
-
