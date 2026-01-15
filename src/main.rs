@@ -457,6 +457,7 @@ struct TextEmbedRequest {
 struct TextBatchRequest {
     /// List of texts to embed
     #[schema(example = json!(["Hello world", "Goodbye world"]))]
+    #[serde(alias = "input")]
     inputs: Vec<String>,
     /// Embedding dimension (1-768)
     #[serde(default = "default_dim")]
@@ -526,6 +527,7 @@ struct ImageBatchRequest {
     /// List of image inputs (URLs or base64)
     #[schema(example = json!(["https://picsum.photos/200/200", "https://picsum.photos/300/400", "https://picsum.photos/300/400"]))]
     #[serde(alias = "contents")]
+    #[serde(alias = "input")]
     inputs: Vec<String>,
     /// Embedding dimension (1-768)
     #[serde(default = "default_dim")]
