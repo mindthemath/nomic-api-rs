@@ -122,7 +122,7 @@
             margin: 0.25rem 0 0;
             font-size: 0.875rem;
             color: var(--text-muted);
-            max-width: 70ch;
+            max-width: min(100ch, calc(100vw - 300px));
         }
 
         .header-text p code {
@@ -133,6 +133,28 @@
             border-radius: 4px;
             font-size: 0.85em;
             border: 1px solid rgba(45, 212, 191, 0.2);
+        }
+
+        .header-text p code a {
+            color: inherit;
+            text-decoration: none;
+            transition: opacity 0.2s ease;
+        }
+
+        .header-text p code a:hover {
+            opacity: 0.8;
+            text-decoration: underline;
+        }
+
+        .header-text p a {
+            color: var(--primary);
+            text-decoration: none;
+            transition: all 0.2s ease;
+        }
+
+        .header-text p a:hover {
+            color: var(--primary-strong);
+            text-decoration: underline;
         }
 
         .header-badge {
@@ -561,9 +583,10 @@
         <div class="header-text">
             <h1>nomic-serve</h1>
             <p>
-                Text embedding. Image embedding. EXIF extraction and color statistics. 1 API, 3 functions.
+                txt2vec. img2vec. EXIF data + color stats. 1 API, 3 functions. 
+                Made with Rust by <a href="https://mindthemath.com">Mind the Math</a>.
                 <br>
-                Powered by <code>nomic-embed-text-v1.5</code> + <code>nomic-embed-vision-v1.5</code> and Rust.
+                Powered by <code><a href="https://huggingface.co/nomic-ai/nomic-embed-text-v1.5" target="_blank" rel="noopener noreferrer">nomic-embed-text-v1.5</a></code> + <code><a href="https://huggingface.co/nomic-ai/nomic-embed-vision-v1.5" target="_blank" rel="noopener noreferrer">nomic-embed-vision-v1.5</a></code>.
             </p>
         </div>
         <span class="header-badge">v0.1.0</span>
