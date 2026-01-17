@@ -1051,7 +1051,8 @@ async fn txt_embed_handler(
     }
 
     let prefixed_text = format!("{}: {}", req.prefix, req.input);
-    let (mut embedding, tokens) = embed_text(text_state, &prefixed_text)?;
+    let (mut embedding, tokens, tokenize_time, inference_time, postprocess_time) =
+        embed_text(text_state, &prefixed_text)?;
 
     if req.dim < embedding.len() {
         embedding.truncate(req.dim);
@@ -1059,7 +1060,10 @@ async fn txt_embed_handler(
 
     let total_time = start.elapsed();
     info!(
-        "Text embed timing - total: {:.2}ms",
+        "Text embed timing - tokenize: {:.2}ms, ONNX: {:.2}ms, postprocess: {:.2}ms, total: {:.2}ms",
+        tokenize_time.as_secs_f64() * 1000.0,
+        inference_time.as_secs_f64() * 1000.0,
+        postprocess_time.as_secs_f64() * 1000.0,
         total_time.as_secs_f64() * 1000.0
     );
 
@@ -1128,23 +1132,34 @@ async fn txt_batch_handler(
 
     let mut embeddings = Vec::with_capacity(req.inputs.len());
     let mut tokens = Vec::with_capacity(req.inputs.len());
+    let mut total_tokenize = std::time::Duration::ZERO;
+    let mut total_inference = std::time::Duration::ZERO;
+    let mut total_postprocess = std::time::Duration::ZERO;
 
     for text in &req.inputs {
         let prefixed_text = format!("{}: {}", req.prefix, text);
-        let (mut emb, tok) = embed_text(text_state, &prefixed_text)?;
+        let (mut emb, tok, tokenize_time, inference_time, postprocess_time) =
+            embed_text(text_state, &prefixed_text)?;
         if req.dim < emb.len() {
             emb.truncate(req.dim);
         }
         embeddings.push(emb);
         tokens.push(tok);
+        total_tokenize += tokenize_time;
+        total_inference += inference_time;
+        total_postprocess += postprocess_time;
     }
 
     let total_time = start.elapsed();
+    let count = req.inputs.len() as f64;
     info!(
-        "Text batch timing - count: {}, total: {:.2}ms, avg: {:.2}ms",
+        "Text batch timing - count: {}, tokenize: {:.2}ms, ONNX: {:.2}ms, postprocess: {:.2}ms, total: {:.2}ms, avg: {:.2}ms",
         req.inputs.len(),
+        total_tokenize.as_secs_f64() * 1000.0,
+        total_inference.as_secs_f64() * 1000.0,
+        total_postprocess.as_secs_f64() * 1000.0,
         total_time.as_secs_f64() * 1000.0,
-        total_time.as_secs_f64() * 1000.0 / req.inputs.len() as f64
+        total_time.as_secs_f64() * 1000.0 / count
     );
 
     Ok(Json(TextBatchResponse {
@@ -1188,7 +1203,8 @@ async fn txt_query_handler(
 
     // Always use search_query prefix for /query endpoint
     let prefixed_text = format!("search_query: {}", req.input);
-    let (mut embedding, tokens) = embed_text(text_state, &prefixed_text)?;
+    let (mut embedding, tokens, tokenize_time, inference_time, postprocess_time) =
+        embed_text(text_state, &prefixed_text)?;
 
     if req.dim < embedding.len() {
         embedding.truncate(req.dim);
@@ -1196,7 +1212,10 @@ async fn txt_query_handler(
 
     let total_time = start.elapsed();
     info!(
-        "Text query timing - total: {:.2}ms",
+        "Text query timing - tokenize: {:.2}ms, ONNX: {:.2}ms, postprocess: {:.2}ms, total: {:.2}ms",
+        tokenize_time.as_secs_f64() * 1000.0,
+        inference_time.as_secs_f64() * 1000.0,
+        postprocess_time.as_secs_f64() * 1000.0,
         total_time.as_secs_f64() * 1000.0
     );
 
@@ -1247,14 +1266,13 @@ async fn img_embed_handler(
     let image = decode_image(&req.input).await?;
     let decode_time = decode_start.elapsed();
 
-    let inference_start = Instant::now();
-    let mut embedding = embed_image(vision_state, &image)?;
-    let inference_time = inference_start.elapsed();
+    let (mut embedding, preprocess_time, onnx_time) = embed_image(vision_state, &image)?;
 
     info!(
-        "Image embed timing - decode: {:.2}ms, inference: {:.2}ms, total: {:.2}ms",
+        "Image embed timing - decode: {:.2}ms, preprocess: {:.2}ms, ONNX: {:.2}ms, total: {:.2}ms",
         decode_time.as_secs_f64() * 1000.0,
-        inference_time.as_secs_f64() * 1000.0,
+        preprocess_time.as_secs_f64() * 1000.0,
+        onnx_time.as_secs_f64() * 1000.0,
         start.elapsed().as_secs_f64() * 1000.0
     );
 
@@ -1593,8 +1611,20 @@ fn mean_pool(embeddings: &[f32], attention_mask: &[i64], seq_len: usize) -> Vec<
     pooled
 }
 
-/// Embed single text, returns 768-dim embedding
-fn embed_text(state: &TextState, text: &str) -> Result<(Vec<f32>, usize), Error> {
+/// Embed single text, returns 768-dim embedding and timing info
+fn embed_text(
+    state: &TextState,
+    text: &str,
+) -> Result<
+    (
+        Vec<f32>,
+        usize,
+        std::time::Duration,
+        std::time::Duration,
+        std::time::Duration,
+    ),
+    Error,
+> {
     let tokenize_start = Instant::now();
     let encoding = state
         .tokenizer
@@ -1609,9 +1639,7 @@ fn embed_text(state: &TextState, text: &str) -> Result<(Vec<f32>, usize), Error>
         .iter()
         .map(|&i| i as i64)
         .collect();
-    let tokenize_time = tokenize_start.elapsed();
 
-    let prepare_start = Instant::now();
     let input_shape = vec![1i64, token_count as i64];
     let input_ids_value: Value = Value::from_array((input_shape.clone(), ids))?.into();
     let token_type_ids_value: Value =
@@ -1633,7 +1661,7 @@ fn embed_text(state: &TextState, text: &str) -> Result<(Vec<f32>, usize), Error>
             SessionInputValue::from(attention_mask_value),
         ),
     ];
-    let prepare_time = prepare_start.elapsed();
+    let tokenize_time = tokenize_start.elapsed();
 
     let inference_start = Instant::now();
     let mut session_guard = state.session.lock().unwrap();
@@ -1664,15 +1692,13 @@ fn embed_text(state: &TextState, text: &str) -> Result<(Vec<f32>, usize), Error>
     l2_normalize(&mut embedding);
     let postprocess_time = postprocess_start.elapsed();
 
-    info!(
-        "Text inference timing - tokenize: {:.2}ms, prepare: {:.2}ms, ONNX: {:.2}ms, postprocess: {:.2}ms",
-        tokenize_time.as_secs_f64() * 1000.0,
-        prepare_time.as_secs_f64() * 1000.0,
-        inference_time.as_secs_f64() * 1000.0,
-        postprocess_time.as_secs_f64() * 1000.0
-    );
-
-    Ok((embedding, token_count))
+    Ok((
+        embedding,
+        token_count,
+        tokenize_time,
+        inference_time,
+        postprocess_time,
+    ))
 }
 
 // ============================================================================
@@ -1740,8 +1766,11 @@ pub fn l2_normalize(vec: &mut Vec<f32>) {
     }
 }
 
-/// Embed single image, returns 768-dim L2-normalized embedding
-pub fn embed_image(state: &VisionState, image: &DynamicImage) -> Result<Vec<f32>, Error> {
+/// Embed single image, returns 768-dim L2-normalized embedding and timing info
+pub fn embed_image(
+    state: &VisionState,
+    image: &DynamicImage,
+) -> Result<(Vec<f32>, std::time::Duration, std::time::Duration), Error> {
     let preprocess_start = Instant::now();
     let tensor = preprocess_image(image);
     let preprocess_time = preprocess_start.elapsed();
@@ -1760,11 +1789,6 @@ pub fn embed_image(state: &VisionState, image: &DynamicImage) -> Result<Vec<f32>
     let outputs = session_guard.run(SessionInputs::from(inputs_vec))?;
     let inference_time = inference_start.elapsed();
 
-    info!(
-        "Vision inference timing - preprocess: {:.2}ms, ONNX: {:.2}ms",
-        preprocess_time.as_secs_f64() * 1000.0,
-        inference_time.as_secs_f64() * 1000.0
-    );
     let (output_shape, raw_output) = outputs[0].try_extract_tensor::<f32>()?.to_owned();
 
     let output_vec = raw_output.to_vec();
@@ -1789,7 +1813,7 @@ pub fn embed_image(state: &VisionState, image: &DynamicImage) -> Result<Vec<f32>
     // L2 normalize
     l2_normalize(&mut embedding);
 
-    Ok(embedding)
+    Ok((embedding, preprocess_time, inference_time))
 }
 
 /// Embed multiple images in a batch, returns list of 768-dim L2-normalized embeddings
