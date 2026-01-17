@@ -959,7 +959,7 @@ async fn txt_embed_handler(
     }
 
     let prefixed_text = format!("{}: {}", req.prefix, req.input);
-    let (mut embedding, tokens, tokenize_time, prepare_time, inference_time, postprocess_time) =
+    let (mut embedding, tokens, tokenize_time, inference_time, postprocess_time) =
         embed_text(text_state, &prefixed_text)?;
 
     if req.dim < embedding.len() {
@@ -968,9 +968,8 @@ async fn txt_embed_handler(
 
     let total_time = start.elapsed();
     info!(
-        "Text embed timing - tokenize: {:.2}ms, prepare: {:.2}ms, ONNX: {:.2}ms, postprocess: {:.2}ms, total: {:.2}ms",
+        "Text embed timing - tokenize: {:.2}ms, ONNX: {:.2}ms, postprocess: {:.2}ms, total: {:.2}ms",
         tokenize_time.as_secs_f64() * 1000.0,
-        prepare_time.as_secs_f64() * 1000.0,
         inference_time.as_secs_f64() * 1000.0,
         postprocess_time.as_secs_f64() * 1000.0,
         total_time.as_secs_f64() * 1000.0
@@ -1042,13 +1041,12 @@ async fn txt_batch_handler(
     let mut embeddings = Vec::with_capacity(req.inputs.len());
     let mut tokens = Vec::with_capacity(req.inputs.len());
     let mut total_tokenize = std::time::Duration::ZERO;
-    let mut total_prepare = std::time::Duration::ZERO;
     let mut total_inference = std::time::Duration::ZERO;
     let mut total_postprocess = std::time::Duration::ZERO;
 
     for text in &req.inputs {
         let prefixed_text = format!("{}: {}", req.prefix, text);
-        let (mut emb, tok, tokenize_time, prepare_time, inference_time, postprocess_time) =
+        let (mut emb, tok, tokenize_time, inference_time, postprocess_time) =
             embed_text(text_state, &prefixed_text)?;
         if req.dim < emb.len() {
             emb.truncate(req.dim);
@@ -1056,7 +1054,6 @@ async fn txt_batch_handler(
         embeddings.push(emb);
         tokens.push(tok);
         total_tokenize += tokenize_time;
-        total_prepare += prepare_time;
         total_inference += inference_time;
         total_postprocess += postprocess_time;
     }
@@ -1064,10 +1061,9 @@ async fn txt_batch_handler(
     let total_time = start.elapsed();
     let count = req.inputs.len() as f64;
     info!(
-        "Text batch timing - count: {}, tokenize: {:.2}ms, prepare: {:.2}ms, ONNX: {:.2}ms, postprocess: {:.2}ms, total: {:.2}ms, avg: {:.2}ms",
+        "Text batch timing - count: {}, tokenize: {:.2}ms, ONNX: {:.2}ms, postprocess: {:.2}ms, total: {:.2}ms, avg: {:.2}ms",
         req.inputs.len(),
         total_tokenize.as_secs_f64() * 1000.0,
-        total_prepare.as_secs_f64() * 1000.0,
         total_inference.as_secs_f64() * 1000.0,
         total_postprocess.as_secs_f64() * 1000.0,
         total_time.as_secs_f64() * 1000.0,
@@ -1115,7 +1111,7 @@ async fn txt_query_handler(
 
     // Always use search_query prefix for /query endpoint
     let prefixed_text = format!("search_query: {}", req.input);
-    let (mut embedding, tokens, tokenize_time, prepare_time, inference_time, postprocess_time) =
+    let (mut embedding, tokens, tokenize_time, inference_time, postprocess_time) =
         embed_text(text_state, &prefixed_text)?;
 
     if req.dim < embedding.len() {
@@ -1124,9 +1120,8 @@ async fn txt_query_handler(
 
     let total_time = start.elapsed();
     info!(
-        "Text query timing - tokenize: {:.2}ms, prepare: {:.2}ms, ONNX: {:.2}ms, postprocess: {:.2}ms, total: {:.2}ms",
+        "Text query timing - tokenize: {:.2}ms, ONNX: {:.2}ms, postprocess: {:.2}ms, total: {:.2}ms",
         tokenize_time.as_secs_f64() * 1000.0,
-        prepare_time.as_secs_f64() * 1000.0,
         inference_time.as_secs_f64() * 1000.0,
         postprocess_time.as_secs_f64() * 1000.0,
         total_time.as_secs_f64() * 1000.0
@@ -1535,7 +1530,6 @@ fn embed_text(
         std::time::Duration,
         std::time::Duration,
         std::time::Duration,
-        std::time::Duration,
     ),
     Error,
 > {
@@ -1553,9 +1547,7 @@ fn embed_text(
         .iter()
         .map(|&i| i as i64)
         .collect();
-    let tokenize_time = tokenize_start.elapsed();
 
-    let prepare_start = Instant::now();
     let input_shape = vec![1i64, token_count as i64];
     let input_ids_value: Value = Value::from_array((input_shape.clone(), ids))?.into();
     let token_type_ids_value: Value =
@@ -1577,7 +1569,7 @@ fn embed_text(
             SessionInputValue::from(attention_mask_value),
         ),
     ];
-    let prepare_time = prepare_start.elapsed();
+    let tokenize_time = tokenize_start.elapsed();
 
     let inference_start = Instant::now();
     let mut session_guard = state.session.lock().unwrap();
@@ -1612,7 +1604,6 @@ fn embed_text(
         embedding,
         token_count,
         tokenize_time,
-        prepare_time,
         inference_time,
         postprocess_time,
     ))
