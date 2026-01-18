@@ -99,6 +99,34 @@ fn resolve_model_path<P: AsRef<Path>>(relative: P) -> PathBuf {
     relative.to_path_buf()
 }
 
+/// Resolve model path with smart fallback: try full precision first, then quantized.
+/// If env var is set, use that explicitly. Otherwise, try model.onnx, then model_quantized.onnx.
+fn resolve_model_path_with_fallback(
+    env_var: &str,
+    default_dir: &str,
+    default_filename: &str,
+) -> PathBuf {
+    // If explicit env var is set, use it
+    if let Ok(explicit_path) = std::env::var(env_var) {
+        return resolve_model_path(explicit_path);
+    }
+
+    // Try full precision model first
+    let full_path = resolve_model_path(format!("{}/model.onnx", default_dir));
+    if full_path.exists() {
+        return full_path;
+    }
+
+    // Fall back to quantized model
+    let quantized_path = resolve_model_path(format!("{}/model_quantized.onnx", default_dir));
+    if quantized_path.exists() {
+        return quantized_path;
+    }
+
+    // Neither exists, return default (will fail later with proper error)
+    resolve_model_path(format!("{}/{}", default_dir, default_filename))
+}
+
 /// Image preprocessing constants (CLIP-style, from preprocessor_config.json)
 const IMAGE_SIZE: usize = 224;
 const IMAGE_MEAN: [f32; 3] = [0.48145466, 0.4578275, 0.40821073];
@@ -751,13 +779,9 @@ async fn main() {
     tracing_subscriber::fmt::init();
 
     // Text model configuration
-    // Priority: TXT_MODEL > MODEL > default path
+    // Priority: TXT_MODEL (explicit) > model.onnx (full precision) > model_quantized.onnx (fallback)
     // resolve_model_path handles both CLI (CWD) and double-click (exe-relative) scenarios
-    let txt_model_path = std::env::var("TXT_MODEL")
-        .or_else(|_| std::env::var("MODEL"))
-        .map(PathBuf::from)
-        .map(resolve_model_path)
-        .unwrap_or_else(|_| resolve_model_path("models/txt/model.onnx"));
+    let txt_model_path = resolve_model_path_with_fallback("TXT_MODEL", "models/txt", "model.onnx");
 
     let tok_path = std::env::var("TOKENIZER")
         .map(PathBuf::from)
@@ -765,10 +789,8 @@ async fn main() {
         .unwrap_or_else(|_| resolve_model_path("models/txt/tokenizer.json"));
 
     // Vision model configuration
-    let img_model_path = std::env::var("IMG_MODEL")
-        .map(PathBuf::from)
-        .map(resolve_model_path)
-        .unwrap_or_else(|_| resolve_model_path("models/img/model.onnx"));
+    // Priority: IMG_MODEL (explicit) > model.onnx (full precision) > model_quantized.onnx (fallback)
+    let img_model_path = resolve_model_path_with_fallback("IMG_MODEL", "models/img", "model.onnx");
 
     let port: u16 = std::env::var("PORT")
         .ok()
