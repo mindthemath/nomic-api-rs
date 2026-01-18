@@ -1,0 +1,116 @@
+# Dockerfile for building images from GitHub release artifacts
+# This avoids rebuilding binaries - just downloads pre-built releases and packages them
+
+# Build arguments
+ARG GITHUB_REPOSITORY=mindthemath/nomic-api-rs
+ARG VERSION=latest
+ARG MODEL_VARIANT=quantized
+ARG PLATFORM=linux-x64
+
+# ============================================================================
+# Stage 1: Download and extract artifacts
+# ============================================================================
+# Use same base as runtime for consistency and smaller image size
+FROM debian:trixie-20260112-slim AS downloader
+
+ARG GITHUB_REPOSITORY
+ARG VERSION
+ARG MODEL_VARIANT
+ARG PLATFORM
+
+# Install dependencies for downloading and extracting
+RUN apt-get update && apt-get install -y \
+    curl \
+    tar \
+    gzip \
+    jq \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /downloads
+
+# Download binary tarball
+RUN if [ "$VERSION" = "latest" ]; then \
+        RELEASE_DATA=$(curl -s "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/latest") && \
+        RELEASE_URL=$(echo "$RELEASE_DATA" | jq -r ".assets[] | select(.name | contains(\"${PLATFORM}.tar.gz\")) | .browser_download_url" | head -1) && \
+        echo "Downloading latest binary from: $RELEASE_URL"; \
+    else \
+        RELEASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/v${VERSION}/nomic-embed-v1.5-${VERSION}-${PLATFORM}.tar.gz" && \
+        echo "Downloading binary v${VERSION} from: $RELEASE_URL"; \
+    fi && \
+    curl -L -f -o binary.tar.gz "$RELEASE_URL" && \
+    tar -xzf binary.tar.gz && \
+    mv nomic-embed-v1.5-*/nomic-serve ./nomic-serve && \
+    chmod +x ./nomic-serve && \
+    rm -rf nomic-embed-v1.5-* binary.tar.gz
+
+# Download models tarball
+RUN if [ "$VERSION" = "latest" ]; then \
+        RELEASE_DATA=$(curl -s "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/latest") && \
+        RELEASE_URL=$(echo "$RELEASE_DATA" | jq -r ".assets[] | select(.name | contains(\"models-${MODEL_VARIANT}.tar.gz\")) | .browser_download_url" | head -1) && \
+        echo "Downloading latest models (${MODEL_VARIANT}) from: $RELEASE_URL"; \
+    else \
+        RELEASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/v${VERSION}/nomic-embed-v1.5-${VERSION}-models-${MODEL_VARIANT}.tar.gz" && \
+        echo "Downloading models v${VERSION} (${MODEL_VARIANT}) from: $RELEASE_URL"; \
+    fi && \
+    curl -L -f -o models.tar.gz "$RELEASE_URL" && \
+    tar -xzf models.tar.gz && \
+    mv nomic-embed-v1.5-*/models ./models && \
+    rm -rf nomic-embed-v1.5-* models.tar.gz
+
+# ============================================================================
+# Stage 2: CPU Runtime
+# ============================================================================
+FROM debian:trixie-20260112-slim AS runtime-cpu
+
+WORKDIR /app
+
+# Copy binary and models from downloader stage
+COPY --from=downloader /downloads/nomic-serve ./
+COPY --from=downloader /downloads/models ./models
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    libssl3 \
+    dumb-init \
+    && rm -rf /var/lib/apt/lists/*
+
+# Default configuration
+ENV PORT=8080
+ENV TOKENIZER=models/txt/tokenizer.json
+
+EXPOSE 8080
+
+ENTRYPOINT ["dumb-init", "--"]
+CMD ["./nomic-serve"]
+
+# ============================================================================
+# Stage 3: GPU Runtime (CUDA)
+# ============================================================================
+FROM nvidia/cuda:12.3.2-cudnn9-runtime-ubuntu22.04 AS runtime-gpu
+
+WORKDIR /app
+
+# Copy binary and models from downloader stage
+COPY --from=downloader /downloads/nomic-serve ./
+COPY --from=downloader /downloads/models ./models
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    libssl3 \
+    dumb-init \
+    && rm -rf /var/lib/apt/lists/*
+
+# Default configuration with GPU enabled
+ENV PORT=8080
+ENV TOKENIZER=models/txt/tokenizer.json
+ENV USE_GPU=1
+ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64:/usr/local/cuda/targets/x86_64-linux/lib:${LD_LIBRARY_PATH}
+ENV ORT_LOG_LEVEL=1
+ENV ORT_LOG_SEVERITY_LEVEL=1
+
+EXPOSE 8080
+
+ENTRYPOINT ["dumb-init", "--"]
+CMD ["./nomic-serve"]

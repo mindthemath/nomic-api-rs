@@ -1,25 +1,45 @@
 name: Build and Push Docker Images
 
 on:
-  # push:
-  #   tags:
-  #     - 'v*'  # Trigger on version tags like v1.0.0
-  #   paths-ignore:
-  #     - .github/workflows/release.yml
-  #     - makefile
-  #     - '*.md'
+  push:
+    tags:
+      - "v202*"  # Trigger on version tags
   workflow_dispatch:  # Allow manual trigger
     inputs:
-      tag:
-        description: 'Docker tag (default: latest)'
+      version:
+        description: 'Release version (e.g., 20260118) or "latest"'
         required: false
         default: 'latest'
+      model_variant:
+        description: 'Model variant (quantized or full)'
+        required: false
+        default: 'quantized'
+        type: choice
+        options:
+          - quantized
+          - full
 
 env:
-  DOCKER_IMAGE: mindthemath/nomic-text-v1.5-rs
+  DOCKER_IMAGE: mindthemath/nomic-embed-v1.5
 
 jobs:
   build-and-push:
+    strategy:
+      matrix:
+        include:
+          - platform: linux-x64
+            docker_platform: linux/amd64
+            variant: quantized
+          - platform: linux-x64
+            docker_platform: linux/amd64
+            variant: full
+          - platform: linux-arm64
+            docker_platform: linux/arm64
+            variant: quantized
+          - platform: linux-arm64
+            docker_platform: linux/arm64
+            variant: full
+
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -38,56 +58,115 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Extract tag
-        id: tag
+      - name: Extract version
+        id: version
         run: |
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            echo "tag=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
+            echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
           elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
-            TAG=${GITHUB_REF#refs/tags/}
-            echo "tag=${TAG}" >> $GITHUB_OUTPUT
+            # Remove 'v' prefix from tag (e.g., v20260118 -> 20260118)
+            VERSION=${GITHUB_REF#refs/tags/v}
+            echo "version=${VERSION}" >> $GITHUB_OUTPUT
           else
-            echo "tag=latest" >> $GITHUB_OUTPUT
+            echo "version=latest" >> $GITHUB_OUTPUT
           fi
 
-      - name: Download model files
+      - name: Determine model variant
+        id: model_variant
         run: |
-          make model
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "variant=${{ github.event.inputs.model_variant }}" >> $GITHUB_OUTPUT
+          else
+            echo "variant=${{ matrix.variant }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build CPU image tags
+        id: cpu_tags
+        run: |
+          TAGS="${{ env.DOCKER_IMAGE }}:${{ steps.version.outputs.version }}-${{ matrix.platform }}-${{ steps.model_variant.outputs.variant }}-cpu"
+          TAGS="$TAGS"$'\n'"${{ env.DOCKER_IMAGE }}:${{ steps.version.outputs.version }}-${{ steps.model_variant.outputs.variant }}-cpu"
+          TAGS="$TAGS"$'\n'"${{ env.DOCKER_IMAGE }}:${{ steps.version.outputs.version }}-cpu"
+          if [[ "${{ steps.model_variant.outputs.variant }}" == "quantized" ]]; then
+            TAGS="$TAGS"$'\n'"${{ env.DOCKER_IMAGE }}:latest-cpu"
+          fi
+          echo "tags<<EOF" >> $GITHUB_OUTPUT
+          echo "$TAGS" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Build CPU image
         uses: docker/build-push-action@v5
         with:
           context: .
+          file: ./Dockerfile.release
+          platforms: ${{ matrix.docker_platform }}
           target: runtime-cpu
+          build-args: |
+            GITHUB_REPOSITORY=${{ github.repository }}
+            VERSION=${{ steps.version.outputs.version }}
+            MODEL_VARIANT=${{ steps.model_variant.outputs.variant }}
+            PLATFORM=${{ matrix.platform }}
           push: true
-          tags: |
-            ${{ env.DOCKER_IMAGE }}:${{ steps.tag.outputs.tag }}-cpu
-            ${{ env.DOCKER_IMAGE }}:latest-cpu
+          tags: ${{ steps.cpu_tags.outputs.tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Build GPU image tags
+        if: matrix.platform == 'linux-x64'
+        id: gpu_tags
+        run: |
+          TAGS="${{ env.DOCKER_IMAGE }}:${{ steps.version.outputs.version }}-${{ matrix.platform }}-${{ steps.model_variant.outputs.variant }}-gpu"
+          TAGS="$TAGS"$'\n'"${{ env.DOCKER_IMAGE }}:${{ steps.version.outputs.version }}-${{ steps.model_variant.outputs.variant }}-gpu"
+          TAGS="$TAGS"$'\n'"${{ env.DOCKER_IMAGE }}:${{ steps.version.outputs.version }}-gpu"
+          if [[ "${{ steps.model_variant.outputs.variant }}" == "quantized" ]]; then
+            TAGS="$TAGS"$'\n'"${{ env.DOCKER_IMAGE }}:latest-gpu"
+          fi
+          echo "tags<<EOF" >> $GITHUB_OUTPUT
+          echo "$TAGS" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
       - name: Build GPU image
+        if: matrix.platform == 'linux-x64'
         uses: docker/build-push-action@v5
         with:
           context: .
+          file: ./Dockerfile.release
+          platforms: ${{ matrix.docker_platform }}
           target: runtime-gpu
+          build-args: |
+            GITHUB_REPOSITORY=${{ github.repository }}
+            VERSION=${{ steps.version.outputs.version }}
+            MODEL_VARIANT=${{ steps.model_variant.outputs.variant }}
+            PLATFORM=${{ matrix.platform }}
           push: true
-          tags: |
-            ${{ env.DOCKER_IMAGE }}:${{ steps.tag.outputs.tag }}-gpu
-            ${{ env.DOCKER_IMAGE }}:latest-gpu
+          tags: ${{ steps.gpu_tags.outputs.tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
       - name: Summary
+        if: matrix.platform == 'linux-x64' && matrix.variant == 'quantized'
         run: |
           echo "## Docker Images Built and Pushed" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **CPU**: \`${{ env.DOCKER_IMAGE }}:${{ steps.tag.outputs.tag }}-cpu\`" >> $GITHUB_STEP_SUMMARY
-          echo "- **GPU**: \`${{ env.DOCKER_IMAGE }}:${{ steps.tag.outputs.tag }}-gpu\`" >> $GITHUB_STEP_SUMMARY
+          echo "Version: \`${{ steps.version.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### CPU Images" >> $GITHUB_STEP_SUMMARY
+          echo "- \`${{ env.DOCKER_IMAGE }}:${{ steps.version.outputs.version }}-cpu\` (latest)" >> $GITHUB_STEP_SUMMARY
+          echo "- \`${{ env.DOCKER_IMAGE }}:latest-cpu\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### GPU Images" >> $GITHUB_STEP_SUMMARY
+          echo "- \`${{ env.DOCKER_IMAGE }}:${{ steps.version.outputs.version }}-gpu\` (latest)" >> $GITHUB_STEP_SUMMARY
+          echo "- \`${{ env.DOCKER_IMAGE }}:latest-gpu\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Platform-Specific Tags" >> $GITHUB_STEP_SUMMARY
+          echo "Images are also tagged with platform and model variant:" >> $GITHUB_STEP_SUMMARY
+          echo "- \`${{ env.DOCKER_IMAGE }}:<version>-<platform>-<variant>-<cpu|gpu>\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "Pull commands:" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
-          echo "docker pull ${{ env.DOCKER_IMAGE }}:${{ steps.tag.outputs.tag }}-cpu" >> $GITHUB_STEP_SUMMARY
-          echo "docker pull ${{ env.DOCKER_IMAGE }}:${{ steps.tag.outputs.tag }}-gpu" >> $GITHUB_STEP_SUMMARY
+          echo "# CPU (quantized, latest)" >> $GITHUB_STEP_SUMMARY
+          echo "docker pull ${{ env.DOCKER_IMAGE }}:latest-cpu" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "# GPU (quantized, latest)" >> $GITHUB_STEP_SUMMARY
+          echo "docker pull ${{ env.DOCKER_IMAGE }}:latest-gpu" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
 
