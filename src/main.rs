@@ -666,10 +666,9 @@ async fn main() {
     tracing_subscriber::fmt::init();
 
     // Text model configuration
-    // Priority: TXT_MODEL > MODEL > default path
+    // Priority: TXT_MODEL > default path
     // resolve_model_path handles both CLI (CWD) and double-click (exe-relative) scenarios
     let txt_model_path = std::env::var("TXT_MODEL")
-        .or_else(|_| std::env::var("MODEL"))
         .map(PathBuf::from)
         .map(resolve_model_path)
         .unwrap_or_else(|_| resolve_model_path("models/txt/model.onnx"));
