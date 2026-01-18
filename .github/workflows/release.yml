@@ -46,7 +46,9 @@ jobs:
         run: |
           # Build directly with docker (matching makefile approach but bypassing dependencies)
           # Use quantized models for build (models packaged separately)
+          # Build with CUDA features - binary will fall back to CPU if CUDA libraries unavailable
           docker build --target runtime-cpu \
+            --build-arg RUST_BUILD_FEATURES="--features cuda" \
             --build-arg TXT_MODEL_FILE=model_quantized.onnx \
             --build-arg IMG_MODEL_FILE=model_quantized.onnx \
             -t nomic-embed-v1-5:${{ matrix.artifact }} \
