@@ -29,30 +29,46 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /downloads
 
 # Download binary tarball
-RUN if [ "$VERSION" = "latest" ]; then \
-        RELEASE_DATA=$(curl -s "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/latest") && \
+RUN set -eux && \
+    if [ "$VERSION" = "latest" ]; then \
+        echo "Fetching latest release info..." && \
+        RELEASE_DATA=$(curl -sf "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/latest") || { echo "Failed to fetch latest release"; exit 1; } && \
         RELEASE_URL=$(echo "$RELEASE_DATA" | jq -r ".assets[] | select(.name | contains(\"${PLATFORM}.tar.gz\")) | .browser_download_url" | head -1) && \
+        if [ -z "$RELEASE_URL" ] || [ "$RELEASE_URL" = "null" ]; then \
+            echo "ERROR: Could not find binary asset for platform ${PLATFORM}"; \
+            echo "Available assets:"; \
+            echo "$RELEASE_DATA" | jq -r ".assets[].name"; \
+            exit 1; \
+        fi && \
         echo "Downloading latest binary from: $RELEASE_URL"; \
     else \
         RELEASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/v${VERSION}/nomic-embed-v1.5-${VERSION}-${PLATFORM}.tar.gz" && \
         echo "Downloading binary v${VERSION} from: $RELEASE_URL"; \
     fi && \
-    curl -L -f -o binary.tar.gz "$RELEASE_URL" && \
+    curl -Lf -o binary.tar.gz "$RELEASE_URL" || { echo "Failed to download binary from $RELEASE_URL"; exit 1; } && \
     tar -xzf binary.tar.gz && \
     mv nomic-embed-v1.5-*/nomic-serve ./nomic-serve && \
     chmod +x ./nomic-serve && \
     rm -rf nomic-embed-v1.5-* binary.tar.gz
 
 # Download models tarball
-RUN if [ "$VERSION" = "latest" ]; then \
-        RELEASE_DATA=$(curl -s "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/latest") && \
+RUN set -eux && \
+    if [ "$VERSION" = "latest" ]; then \
+        echo "Fetching latest release info for models..." && \
+        RELEASE_DATA=$(curl -sf "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/latest") || { echo "Failed to fetch latest release"; exit 1; } && \
         RELEASE_URL=$(echo "$RELEASE_DATA" | jq -r ".assets[] | select(.name | contains(\"models-${MODEL_VARIANT}.tar.gz\")) | .browser_download_url" | head -1) && \
+        if [ -z "$RELEASE_URL" ] || [ "$RELEASE_URL" = "null" ]; then \
+            echo "ERROR: Could not find models asset for variant ${MODEL_VARIANT}"; \
+            echo "Available assets:"; \
+            echo "$RELEASE_DATA" | jq -r ".assets[].name"; \
+            exit 1; \
+        fi && \
         echo "Downloading latest models (${MODEL_VARIANT}) from: $RELEASE_URL"; \
     else \
         RELEASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/v${VERSION}/nomic-embed-v1.5-${VERSION}-models-${MODEL_VARIANT}.tar.gz" && \
         echo "Downloading models v${VERSION} (${MODEL_VARIANT}) from: $RELEASE_URL"; \
     fi && \
-    curl -L -f -o models.tar.gz "$RELEASE_URL" && \
+    curl -Lf -o models.tar.gz "$RELEASE_URL" || { echo "Failed to download models from $RELEASE_URL"; exit 1; } && \
     tar -xzf models.tar.gz && \
     mv nomic-embed-v1.5-*/models ./models && \
     rm -rf nomic-embed-v1.5-* models.tar.gz

@@ -10,14 +10,6 @@ on:
         description: 'Release version (e.g., 20260118) or "latest"'
         required: false
         default: 'latest'
-      model_variant:
-        description: 'Model variant (quantized or full)'
-        required: false
-        default: 'quantized'
-        type: choice
-        options:
-          - quantized
-          - full
 
 env:
   DOCKER_IMAGE: mindthemath/nomic-embed-v1.5
@@ -71,14 +63,10 @@ jobs:
             echo "version=latest" >> $GITHUB_OUTPUT
           fi
 
-      - name: Determine model variant
+      - name: Set model variant
         id: model_variant
         run: |
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            echo "variant=${{ github.event.inputs.model_variant }}" >> $GITHUB_OUTPUT
-          else
-            echo "variant=${{ matrix.variant }}" >> $GITHUB_OUTPUT
-          fi
+          echo "variant=${{ matrix.variant }}" >> $GITHUB_OUTPUT
 
       - name: Build CPU image tags
         id: cpu_tags
