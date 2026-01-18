@@ -2,10 +2,17 @@
 # nomic-serve Makefile
 # ==============================================================================
 
+default: run
+
 .PHONY: model fmt build clean run health docs openapi test test-list test-dim models-all test-models \
-        docker-build docker-build-cpu docker-build-gpu docker-push docker-push-cpu docker-push-gpu \
+        docker-build docker-build-cpu docker-push docker-push-cpu \
         model-txt model-txt-all model-img model-img-all check-txt check-img check-models \
-        test-img test-img-batch test-multimodal
+        test-img test-img-batch test-multimodal test-img-stats run-stats \
+        test-vision-batch test-vision-variants test-text-batch-fp32 test-text-batch-onnx-fp16 \
+        test-fp16-accuracy test-text-batch-transformers test-text-batch-half-precision \
+        benchmark-vision-batch benchmark-vision-batch-gpu benchmark-throughput \
+        docker-build-gpu docker-build-gpu-full docker-run-gpu docker-run-gpu-full \
+        docker-push-gpu
 
 # ==============================================================================
 # Model Files
@@ -65,34 +72,74 @@ check-models: check-txt check-img
 # ==============================================================================
 
 fmt:
-	cargo fmt
+	./bin/cargo fmt
 
 target/release/nomic-serve: src/main.rs Cargo.toml static/swagger-ui/index.html
-	cargo build --release
+	./bin/cargo build --release
 
 build: fmt target/release/nomic-serve
-	@echo "✓ Build complete (CPU only)"
+	@echo "✓ Build complete"
 
-# Build with CUDA support (Linux only, requires NVIDIA drivers)
-build-cuda: fmt
-	cargo build --release --features cuda
-	@echo "✓ Build complete (with CUDA support)"
+build-gpu: fmt
+	./bin/cargo build --release --features cuda
 
 check:
-	@cargo check
+	@./bin/cargo check
 	@echo "✓ Check complete"
+
+lint:
+	@uvx black scripts/
+	@uvx isort --profile black scripts/
+	@echo "✓ Lint complete"
 
 clean:
 	rm -rf target Cargo.lock
+
+clean-imgs:
+	@printf "Are you sure you want to delete scripts/test_images? [y/N] "; \
+	read REPLY; \
+	case "$$REPLY" in \
+		[Yy]*) rm -rf scripts/test_images; echo "✓ Deleted scripts/test_images"; ;; \
+		*) echo "Cancelled."; ;; \
+	esac
+
+clean-results:
+	@printf "Are you sure you want to delete scripts/results? [y/N] "; \
+	read REPLY; \
+	case "$$REPLY" in \
+		[Yy]*) rm -rf scripts/results; echo "✓ Deleted scripts/results"; ;; \
+		*) echo "Cancelled."; ;; \
+	esac
 
 # ==============================================================================
 # Run
 # ==============================================================================
 
-run: build check-txt
-	./target/release/nomic-serve
+run: build check-models
+	IMG_MAX_BATCH_SIZE=256 TXT_MAX_BATCH_SIZE=2056 ./target/release/nomic-serve
+
+run-gpu: build-gpu check-models
+	USE_GPU=true ./target/release/nomic-serve
+
+run-benchmark: build
+	@echo "Starting server with high max batch sizes for benchmarking..."
+	@echo "Using FP32 models to enable batching..."
+	@if [ ! -f "models/txt/model.onnx" ]; then \
+		echo "❌ FP32 text model not found. Run: make model-txt"; \
+		exit 1; \
+	fi
+	@if [ ! -f "models/img/model.onnx" ]; then \
+		echo "❌ FP32 vision model not found. Run: make model-img"; \
+		exit 1; \
+	fi
+	TXT_MODEL=models/txt/model.onnx IMG_MODEL=models/img/model.onnx TXT_MAX_BATCH_SIZE=1024 IMG_MAX_BATCH_SIZE=128 ./target/release/nomic-serve
 
 run-full: build check-models
+	AVERAGING=arithmetic TXT_MODEL=models/txt/model.onnx IMG_MODEL=models/img/model.onnx IMG_MAX_BATCH_SIZE=256 TXT_MAX_BATCH_SIZE=2056 ./target/release/nomic-serve
+
+
+# Run server (image-stats is now always included, no model files required for /img/stats)
+run-stats: build
 	./target/release/nomic-serve
 
 # ==============================================================================
@@ -155,6 +202,98 @@ test-img-batch:
 		-d '{"contents": ["https://picsum.photos/400/300", "https://picsum.photos/300/400"]}' | \
 		jq '{count: (.embeddings | length), time_ms: (.time_ms | floor), samples: [.embeddings[] | .[0:3] | map(. * 1000 | floor / 1000)]}'
 
+# Test image stats endpoint (requires image-stats feature)
+test-img-stats:
+	@echo "Testing /img/stats with URL (geometric mean)..."
+	@curl -s -X POST localhost:8080/img/stats \
+		-H 'content-type: application/json' \
+		-d '{"content": "https://picsum.photos/400/300", "averaging_method": "geometric"}' | \
+		jq '{time_ms: (.time_ms | floor), exif_fields: (.exif_data | keys | length), avg_color: .color_data.avg_color, dominant_color: .color_data.dominant_color}'
+
+test-img-stats-arithmetic:
+	@echo "Testing /img/stats with arithmetic mean..."
+	@curl -s -X POST localhost:8080/img/stats \
+		-H 'content-type: application/json' \
+		-d '{"content": "https://picsum.photos/400/300", "averaging_method": "arithmetic"}' | \
+		jq '{time_ms: (.time_ms | floor), avg_color: .color_data.avg_color, dominant_color: .color_data.dominant_color}'
+
+# Validate Rust image-stats against Python reference
+test-img-stats-validate:
+	@echo "Validating Rust /img/stats against Python reference..."
+	@cd scripts && time python3 test_image_stats.py --rust-url http://localhost:8080 --count 100 --seed 1231 --tidy --paged
+
+# Test vision model batching safety (check for cross-sample interference)
+test-vision-batch:
+	@echo "Testing vision model batching for cross-sample interference..."
+	@cd scripts && python3 test_vision_batch_interference.py
+
+# Test text model FP32 vs quantized batching
+test-text-batch-fp32:
+	@echo "Testing text model batching: quantized vs FP32..."
+	@cd scripts && python3 test_text_batch_fp32.py
+
+# Test text model ONNX FP16 vs other variants
+test-text-batch-onnx-fp16:
+	@echo "Testing text model batching: ONNX FP16 vs INT8 vs FP32 vs Q4F16..."
+	@cd scripts && python3 test_text_batch_onnx_fp16.py
+
+# Test FP16 vs FP32 accuracy and batch sensitivity
+test-fp16-accuracy:
+	@echo "Testing FP16 vs FP32 accuracy and batch sensitivity..."
+	@cd scripts && python3 test_fp16_vs_fp32_accuracy.py
+
+# Test vision model variants (FP32, FP16, quantized)
+test-vision-variants:
+	@echo "Testing vision model variants: FP32 vs FP16 vs Quantized..."
+	@cd scripts && python3 test_vision_model_variants.py
+
+# Test text model with PyTorch/transformers
+test-text-batch-transformers:
+	@echo "Testing text model batching with PyTorch/transformers..."
+	@cd scripts && python3 test_text_batch_transformers.py
+
+# Test text model with PyTorch half-precision (FP16/BF16)
+test-text-batch-half-precision:
+	@echo "Testing text model batching with PyTorch half-precision (FP16/BF16)..."
+	@cd scripts && python3 test_text_batch_half_precision.py
+
+# Benchmark vision model batching performance
+benchmark-vision-batch:
+	@echo "Benchmarking vision model with different batch sizes..."
+	@cd scripts && python3 benchmark_vision_batching.py
+
+# Benchmark vision model on GPU (if available)
+benchmark-vision-batch-gpu:
+	@echo "Benchmarking vision model on GPU with different batch sizes..."
+	@cd scripts && python3 benchmark_vision_batching.py --gpu
+
+# Benchmark API server throughput
+benchmark-throughput:
+	@echo "Benchmarking API server throughput..."
+	@echo "Make sure server is running: make run"
+	@cd scripts && python3 benchmark_throughput.py
+
+# Benchmark batch size performance (comprehensive)
+benchmark-batch-performance:
+	@echo "Benchmarking batch size performance..."
+	@echo "Make sure server is running with high max batch size:"
+	@echo "  make run-benchmark"
+	@cd scripts && python3 benchmark_batch_performance.py --max-batch-size 2056
+
+benchmark-batch-performance-img:
+	@echo "Benchmarking image batch size performance..."
+	@cd scripts && python3 benchmark_batch_performance.py --endpoint img --max-batch-size 2056
+
+benchmark-batch-performance-txt:
+	@echo "Benchmarking text batch size performance..."
+	@cd scripts && python3 benchmark_batch_performance.py --endpoint txt --max-batch-size 2056
+
+# Test Rust vision batching implementation via API
+test-rust-batch:
+	@echo "Testing Rust vision batching implementation..."
+	@echo "Make sure server is running: make run"
+	@cd scripts && python3 test_rust_batching.py
+
 # ==============================================================================
 # Test - Multimodal
 # ==============================================================================
@@ -179,24 +318,18 @@ test-multimodal:
 # Compare all model variants against baseline (model.onnx, fp32)
 # Requires: models-all, build, and Python requests library
 test-models: build model-txt-all
-	@echo "Starting model variant comparison (CPU)..."
-	@USE_GPU=0 bash scripts/run_model_comparison.sh
-
-# Compare all model variants on GPU
-# Requires: models-all, build, CUDA drivers, and Python requests library
-test-models-gpu: build model-txt-all
-	@echo "Starting model variant comparison (GPU)..."
-	@USE_GPU=1 bash scripts/run_model_comparison.sh
+	@echo "Starting model variant comparison..."
+	@bash scripts/run_model_comparison.sh
 
 # ==============================================================================
 # Docker
 # ==============================================================================
 
-DOCKER_IMAGE = mindthemath/nomic-embed-v1.5-rs
+DOCKER_IMAGE = litcr.io/lit-container/mindthemath/embedding/nomic-embed-v1.5-rs
 DOCKER_TAG ?= latest
 
-# Build both CPU and GPU images
-docker-build: docker-build-cpu docker-build-gpu
+# Build CPU image
+docker-build: docker-build-cpu
 
 # Build CPU-only image (requires both models, defaults to quantized)
 docker-build-cpu: model-txt model-img
@@ -207,7 +340,7 @@ docker-build-cpu: model-txt model-img
 		-t $(DOCKER_IMAGE):$(DOCKER_TAG)-cpu -t $(DOCKER_IMAGE):latest-cpu .
 
 # Build CPU image with full precision models
-docker-build-cpu-full: model-txt-all model-img-all
+docker-build-cpu-full: model-txt model-img
 	@echo "Building CPU Docker image (full precision models)..."
 	docker build --target runtime-cpu \
 		--build-arg TXT_MODEL_FILE=model.onnx \
@@ -215,29 +348,41 @@ docker-build-cpu-full: model-txt-all model-img-all
 		-t $(DOCKER_IMAGE):$(DOCKER_TAG)-cpu-full -t $(DOCKER_IMAGE):latest-cpu-full .
 
 docker-run-cpu: docker-build-cpu
-	docker run -p 8080:8080 --dns 1.1.1.1 --dns 1.0.0.1 $(DOCKER_IMAGE):$(DOCKER_TAG)-cpu
+	docker run --rm -p 8080:8080 --dns 1.1.1.1 --dns 1.0.0.1 $(DOCKER_IMAGE):$(DOCKER_TAG)-cpu
 
-# Build GPU (CUDA) image (requires both models, defaults to quantized)
+docker-run-cpu-full: docker-build-cpu-full
+	docker run --rm -p 8080:8080 --dns 1.1.1.1 --dns 1.0.0.1 $(DOCKER_IMAGE):$(DOCKER_TAG)-cpu-full
+
+# Build GPU image with quantized models
 docker-build-gpu: model-txt model-img
 	@echo "Building GPU Docker image (quantized models)..."
 	docker build --target runtime-gpu \
 		--build-arg TXT_MODEL_FILE=model_quantized.onnx \
 		--build-arg IMG_MODEL_FILE=model_quantized.onnx \
+		--build-arg RUST_BUILD_FEATURES="--features cuda" \
 		-t $(DOCKER_IMAGE):$(DOCKER_TAG)-gpu -t $(DOCKER_IMAGE):latest-gpu .
 
 # Build GPU image with full precision models
-docker-build-gpu-full: model-txt-all model-img-all
+docker-build-gpu-full: model-txt model-img
 	@echo "Building GPU Docker image (full precision models)..."
 	docker build --target runtime-gpu \
 		--build-arg TXT_MODEL_FILE=model.onnx \
 		--build-arg IMG_MODEL_FILE=model.onnx \
+		--build-arg RUST_BUILD_FEATURES="--features cuda" \
 		-t $(DOCKER_IMAGE):$(DOCKER_TAG)-gpu-full -t $(DOCKER_IMAGE):latest-gpu-full .
 
 docker-run-gpu: docker-build-gpu
-	docker run --gpus all -p 8080:8080 --dns 1.1.1.1 --dns 1.0.0.1 $(DOCKER_IMAGE):$(DOCKER_TAG)-gpu
+	docker run --rm -it --gpus all -p 8080:8080 --dns 1.1.1.1 --dns 1.0.0.1 \
+		-e TXT_MAX_BATCH_SIZE=2056 -e IMG_MAX_BATCH_SIZE=256 \
+		$(DOCKER_IMAGE):$(DOCKER_TAG)-gpu
 
-# Push both images
-docker-push: docker-push-cpu docker-push-gpu
+docker-run-gpu-full: docker-build-gpu-full
+	docker run --rm -it --gpus all -p 8080:8080 --dns 1.1.1.1 --dns 1.0.0.1 \
+		-e TXT_MAX_BATCH_SIZE=2056 -e IMG_MAX_BATCH_SIZE=256 \
+		$(DOCKER_IMAGE):$(DOCKER_TAG)-gpu-full
+
+# Push image
+docker-push: docker-push-cpu docker-push-gpu # Include GPU push
 
 # Push CPU image
 docker-push-cpu: docker-build-cpu

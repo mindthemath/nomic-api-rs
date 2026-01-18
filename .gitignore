@@ -27,3 +27,8 @@ venv/
 .DS_Store
 Thumbs.db
 models/
+test_images/
+results/
+*.tar.gz
+
+.cspell

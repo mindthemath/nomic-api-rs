@@ -62,13 +62,15 @@ def get_embedding(port: int, text: str) -> Tuple[List[float], float]:
     response.raise_for_status()
     data = response.json()
     latency = (time.time() - start) * 1000
-    
+
     if "embedding" not in data:
         if "error" in data:
             raise ValueError(f"Server error on port {port}: {data['error']}")
         else:
-            raise ValueError(f"Unexpected response format from port {port}. Keys: {list(data.keys())}. Response: {data}")
-    
+            raise ValueError(
+                f"Unexpected response format from port {port}. Keys: {list(data.keys())}. Response: {data}"
+            )
+
     return data["embedding"], latency
 
 
@@ -149,9 +151,11 @@ def compare_models(
         "latency_ms": {
             "baseline_mean": sum(baseline_latencies) / len(baseline_latencies),
             "variant_mean": sum(variant_latencies) / len(variant_latencies),
-            "speedup": sum(baseline_latencies) / sum(variant_latencies)
-            if sum(variant_latencies) > 0
-            else 0,
+            "speedup": (
+                sum(baseline_latencies) / sum(variant_latencies)
+                if sum(variant_latencies) > 0
+                else 0
+            ),
         },
     }
 
@@ -167,10 +171,18 @@ def print_results(results: Dict):
     s = results["summary"]
 
     print(f"\n📊 Similarity Metrics:")
-    print(f"  Cosine Similarity: {s['cosine_similarity']['mean']:.6f} (min: {s['cosine_similarity']['min']:.6f}, max: {s['cosine_similarity']['max']:.6f})")
-    print(f"  L2 Distance:       {s['l2_distance']['mean']:.6f} (min: {s['l2_distance']['min']:.6f}, max: {s['l2_distance']['max']:.6f})")
-    print(f"  Max Abs Diff:      {s['max_abs_diff']['mean']:.6f} (min: {s['max_abs_diff']['min']:.6f}, max: {s['max_abs_diff']['max']:.6f})")
-    print(f"  Mean Abs Diff:     {s['mean_abs_diff']['mean']:.6f} (min: {s['mean_abs_diff']['min']:.6f}, max: {s['mean_abs_diff']['max']:.6f})")
+    print(
+        f"  Cosine Similarity: {s['cosine_similarity']['mean']:.6f} (min: {s['cosine_similarity']['min']:.6f}, max: {s['cosine_similarity']['max']:.6f})"
+    )
+    print(
+        f"  L2 Distance:       {s['l2_distance']['mean']:.6f} (min: {s['l2_distance']['min']:.6f}, max: {s['l2_distance']['max']:.6f})"
+    )
+    print(
+        f"  Max Abs Diff:      {s['max_abs_diff']['mean']:.6f} (min: {s['max_abs_diff']['min']:.6f}, max: {s['max_abs_diff']['max']:.6f})"
+    )
+    print(
+        f"  Mean Abs Diff:     {s['mean_abs_diff']['mean']:.6f} (min: {s['mean_abs_diff']['min']:.6f}, max: {s['mean_abs_diff']['max']:.6f})"
+    )
 
     print(f"\n⚡ Performance:")
     print(f"  Baseline latency: {s['latency_ms']['baseline_mean']:.2f} ms")
@@ -181,15 +193,19 @@ def print_results(results: Dict):
     print(f"\n📝 Per-Text Details:")
     for i, text_result in enumerate(results["texts"], 1):
         print(f"  [{i}] {text_result['text']}")
-        print(f"      Cosine: {text_result['cosine_similarity']:.6f}, "
-              f"L2: {text_result['l2_distance']:.4f}, "
-              f"Max diff: {text_result['max_abs_diff']:.6f}")
+        print(
+            f"      Cosine: {text_result['cosine_similarity']:.6f}, "
+            f"L2: {text_result['l2_distance']:.4f}, "
+            f"Max diff: {text_result['max_abs_diff']:.6f}"
+        )
 
 
 def main():
     """Main comparison script."""
     if len(sys.argv) < 3:
-        print("Usage: compare_model_variants.py <baseline_port> <variant_port> <variant_name>")
+        print(
+            "Usage: compare_model_variants.py <baseline_port> <variant_port> <variant_name>"
+        )
         sys.exit(1)
 
     baseline_port = int(sys.argv[1])
@@ -222,4 +238,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

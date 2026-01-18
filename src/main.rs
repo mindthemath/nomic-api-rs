@@ -10,6 +10,7 @@
 //! - `POST /query`     - Single text with search_query prefix (convenience)
 //! - `POST /img/embed` - Single image embedding
 //! - `POST /img/batch` - Multiple image embeddings
+//! - `POST /img/stats` - Image statistics (EXIF + colors)
 //!
 //! ## Why Sequential Processing
 //!
@@ -17,8 +18,10 @@
 //! for the nomic ONNX models because they exhibit cross-sample interference when batched.
 //! See README.md for detailed explanation.
 
+mod image_stats;
+
 use axum::{
-    extract::State,
+    extract::{DefaultBodyLimit, State},
     http::{header, Method, StatusCode},
     response::{IntoResponse, Json},
     routing::{get, post},
@@ -27,8 +30,11 @@ use axum::{
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use image::{DynamicImage, ImageReader};
 use ndarray::ShapeError;
+#[cfg(feature = "cuda")]
+use ort::execution_providers::{
+    CPUExecutionProvider, CUDAExecutionProvider, ExecutionProviderDispatch,
+};
 use ort::{
-    execution_providers::CUDAExecutionProvider,
     session::{
         builder::{GraphOptimizationLevel, SessionBuilder},
         Session, SessionInputValue, SessionInputs,
@@ -36,6 +42,7 @@ use ort::{
     value::Value,
     Error as OrtError,
 };
+
 use serde::{Deserialize, Serialize};
 use std::{
     io::Cursor,
@@ -90,6 +97,34 @@ fn resolve_model_path<P: AsRef<Path>>(relative: P) -> PathBuf {
     relative.to_path_buf()
 }
 
+/// Resolve model path with smart fallback: try full precision first, then quantized.
+/// If env var is set, use that explicitly. Otherwise, try model.onnx, then model_quantized.onnx.
+fn resolve_model_path_with_fallback(
+    env_var: &str,
+    default_dir: &str,
+    default_filename: &str,
+) -> PathBuf {
+    // If explicit env var is set, use it
+    if let Ok(explicit_path) = std::env::var(env_var) {
+        return resolve_model_path(explicit_path);
+    }
+
+    // Try full precision model first
+    let full_path = resolve_model_path(format!("{}/model.onnx", default_dir));
+    if full_path.exists() {
+        return full_path;
+    }
+
+    // Fall back to quantized model
+    let quantized_path = resolve_model_path(format!("{}/model_quantized.onnx", default_dir));
+    if quantized_path.exists() {
+        return quantized_path;
+    }
+
+    // Neither exists, return default (will fail later with proper error)
+    resolve_model_path(format!("{}/{}", default_dir, default_filename))
+}
+
 /// Image preprocessing constants (CLIP-style, from preprocessor_config.json)
 const IMAGE_SIZE: usize = 224;
 const IMAGE_MEAN: [f32; 3] = [0.48145466, 0.4578275, 0.40821073];
@@ -100,7 +135,7 @@ const IMAGE_STD: [f32; 3] = [0.26862954, 0.26130258, 0.27577711];
 // ============================================================================
 
 #[derive(Debug)]
-struct Error(StatusCode, String);
+pub struct Error(pub StatusCode, pub String);
 
 impl From<OrtError> for Error {
     fn from(e: OrtError) -> Self {
@@ -124,54 +159,204 @@ impl IntoResponse for Error {
 // Application State
 // ============================================================================
 
+/// Model variant detection
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ModelVariant {
+    /// Full precision (FP32) - supports batching
+    Full,
+    /// Quantized (INT8) - may have batching restrictions
+    Quantized,
+}
+
+impl ModelVariant {
+    /// Detect model variant from filename
+    fn from_path(path: &Path) -> Self {
+        let filename = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+
+        if filename.contains("quantized") || filename.contains("int8") || filename.contains("uint8")
+        {
+            ModelVariant::Quantized
+        } else {
+            ModelVariant::Full
+        }
+    }
+}
+
 /// Text embedding state (tokenizer + ONNX session)
 struct TextState {
     session: Mutex<Session>,
     tokenizer: Tokenizer,
+    variant: ModelVariant,
+    max_batch_size: usize,
 }
 
 /// Vision embedding state (ONNX session only, no tokenizer)
-struct VisionState {
+pub struct VisionState {
     session: Mutex<Session>,
+    max_batch_size: usize,
 }
 
 /// Combined application state
 #[derive(Clone)]
-struct AppState {
+pub struct AppState {
     text: Option<Arc<TextState>>,
     vision: Option<Arc<VisionState>>,
+    default_avg_method: image_stats::AveragingMethod,
+    txt_model_path: Option<PathBuf>,
+    tokenizer_path: Option<PathBuf>,
+    img_model_path: Option<PathBuf>,
+    gpu_enabled: bool,
 }
 
 impl AppState {
+    #[allow(unused_variables)]
     async fn new(
         txt_model: Option<PathBuf>,
         tokenizer: Option<PathBuf>,
         img_model: Option<PathBuf>,
+        default_avg_method: image_stats::AveragingMethod,
         use_gpu: bool,
     ) -> anyhow::Result<Self> {
         let cold_start = Instant::now();
 
-        // Load text model if paths provided
-        let text = if let (Some(model_path), Some(tok_path)) = (txt_model, tokenizer) {
-            info!("Loading text model: {:?}", model_path);
+        // Clone paths for storing in state
+        let txt_model_path = txt_model.clone();
+        let tokenizer_path = tokenizer.clone();
+        let img_model_path = img_model.clone();
+
+        #[cfg(feature = "cuda")]
+        let gpu_enabled = use_gpu;
+        #[cfg(not(feature = "cuda"))]
+        let gpu_enabled = false;
+
+        // Verify CUDA is available if requested
+        #[cfg(feature = "cuda")]
+        if use_gpu {
+            // Check if CUDA libraries are available
+            if std::env::var("LD_LIBRARY_PATH").is_ok() {
+                info!("LD_LIBRARY_PATH is set, CUDA libraries should be available");
+            }
+            // Try to verify CUDA is accessible
+            if let Ok(cuda_path) = std::env::var("CUDA_PATH") {
+                info!("CUDA_PATH: {}", cuda_path);
+            }
+        }
+
+        let session_builder_factory = || -> anyhow::Result<SessionBuilder> {
+            #[cfg(feature = "cuda")]
             let mut builder = SessionBuilder::new()
                 .map_err(|e| anyhow::anyhow!("Failed to create session builder: {}", e))?
                 .with_optimization_level(GraphOptimizationLevel::Level3)
                 .map_err(|e| anyhow::anyhow!("Failed to set optimization level: {}", e))?;
+
+            #[cfg(not(feature = "cuda"))]
+            let builder = SessionBuilder::new()
+                .map_err(|e| anyhow::anyhow!("Failed to create session builder: {}", e))?
+                .with_optimization_level(GraphOptimizationLevel::Level3)
+                .map_err(|e| anyhow::anyhow!("Failed to set optimization level: {}", e))?;
+
+            #[cfg(feature = "cuda")]
             if use_gpu {
+                // Use CUDA provider first, with CPU as fallback
+                // ONNX Runtime will use GPU for supported operations and fall back to CPU for unsupported ones
+                let cuda_provider: ExecutionProviderDispatch =
+                    CUDAExecutionProvider::default().into();
+                let cpu_provider: ExecutionProviderDispatch =
+                    CPUExecutionProvider::default().into();
+                // Set both providers - CUDA first (higher priority), CPU as fallback
+                builder = builder.with_execution_providers([cuda_provider, cpu_provider])
+                    .map_err(|e| {
+                        warn!("Failed to initialize CUDA execution provider: {}. This may indicate CUDA is not available.", e);
+                        anyhow::anyhow!("CUDA execution provider failed: {}", e)
+                    })?;
+                info!("CUDA execution provider initialized successfully (with CPU fallback).");
+            } else {
+                info!("GPU not requested (USE_GPU environment variable not '1'). Using CPU.");
+                let cpu_provider: ExecutionProviderDispatch =
+                    CPUExecutionProvider::default().into();
                 builder = builder
-                    .with_execution_providers([CUDAExecutionProvider::default().build()])
-                    .map_err(|e| anyhow::anyhow!("Failed to set execution providers: {}", e))?;
+                    .with_execution_providers([cpu_provider])
+                    .map_err(|e| anyhow::anyhow!("Failed to set CPU execution provider: {}", e))?;
             }
+            #[cfg(not(feature = "cuda"))]
+            {
+                info!("CUDA feature not enabled. Using CPU (default).");
+            }
+
+            Ok(builder)
+        };
+
+        // Parse max batch sizes from environment (default: text=16, image=4)
+        let txt_max_batch_size = std::env::var("TXT_MAX_BATCH_SIZE")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(16);
+
+        let img_max_batch_size = std::env::var("IMG_MAX_BATCH_SIZE")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(4);
+
+        // Load text model if paths provided
+        let text = if let (Some(model_path), Some(tok_path)) = (txt_model, tokenizer) {
+            let variant = ModelVariant::from_path(&model_path);
+            info!(
+                "Loading text model: {:?} (variant: {:?})",
+                model_path, variant
+            );
+
             let model_bytes = std::fs::read(&model_path)
                 .map_err(|e| anyhow::anyhow!("Failed to read model file: {}", e))?;
+
+            let builder = session_builder_factory()?;
             let session = builder
                 .commit_from_memory(&model_bytes)
                 .map_err(|e| anyhow::anyhow!("Failed to load model: {}", e))?;
+
+            // Log execution providers (for debugging)
+            #[cfg(feature = "cuda")]
+            if use_gpu {
+                // Try to verify CUDA is actually available by checking if we can access GPU
+                if let Ok(_) = std::process::Command::new("nvidia-smi")
+                    .arg("--query-gpu=name")
+                    .arg("--format=csv,noheader")
+                    .output()
+                {
+                    info!("CUDA GPU detected via nvidia-smi");
+                } else {
+                    warn!("nvidia-smi not available - CUDA may not be working");
+                }
+                info!("Text model loaded with CUDA provider configured.");
+                info!("If GPU is not used, ONNX Runtime may be falling back to CPU silently.");
+            }
+
             let tokenizer = Tokenizer::from_file(&tok_path).map_err(|e| anyhow::anyhow!(e))?;
+
+            // For quantized text models, enforce batch_size=1
+            let effective_max_batch = if variant == ModelVariant::Quantized {
+                1
+            } else {
+                txt_max_batch_size
+            };
+
+            if variant == ModelVariant::Quantized {
+                info!("Text model is quantized - batching disabled (max_batch_size=1)");
+            } else {
+                info!(
+                    "Text model supports batching (max_batch_size={})",
+                    effective_max_batch
+                );
+            }
+
             Some(Arc::new(TextState {
                 session: Mutex::new(session),
                 tokenizer,
+                variant,
+                max_batch_size: effective_max_batch,
             }))
         } else {
             None
@@ -179,23 +364,35 @@ impl AppState {
 
         // Load vision model if path provided
         let vision = if let Some(model_path) = img_model {
-            info!("Loading vision model: {:?}", model_path);
-            let mut builder = SessionBuilder::new()
-                .map_err(|e| anyhow::anyhow!("Failed to create session builder: {}", e))?
-                .with_optimization_level(GraphOptimizationLevel::Level3)
-                .map_err(|e| anyhow::anyhow!("Failed to set optimization level: {}", e))?;
-            if use_gpu {
-                builder = builder
-                    .with_execution_providers([CUDAExecutionProvider::default().build()])
-                    .map_err(|e| anyhow::anyhow!("Failed to set execution providers: {}", e))?;
-            }
+            let variant = ModelVariant::from_path(&model_path);
+            info!(
+                "Loading vision model: {:?} (variant: {:?})",
+                model_path, variant
+            );
+
             let model_bytes = std::fs::read(&model_path)
                 .map_err(|e| anyhow::anyhow!("Failed to read model file: {}", e))?;
+
+            let builder = session_builder_factory()?;
             let session = builder
                 .commit_from_memory(&model_bytes)
                 .map_err(|e| anyhow::anyhow!("Failed to load model: {}", e))?;
+
+            // Log execution providers (for debugging)
+            #[cfg(feature = "cuda")]
+            if use_gpu {
+                info!("Vision model loaded with CUDA provider configured.");
+                info!("If GPU is not used, ONNX Runtime may be falling back to CPU silently.");
+            }
+
+            info!(
+                "Vision model supports batching (max_batch_size={})",
+                img_max_batch_size
+            );
+
             Some(Arc::new(VisionState {
                 session: Mutex::new(session),
+                max_batch_size: img_max_batch_size,
             }))
         } else {
             None
@@ -203,7 +400,7 @@ impl AppState {
 
         let cold_start_time = cold_start.elapsed();
         info!(
-            "Cold start complete - text model: {}, vision model: {}, time: {:.2}ms",
+            "Cold start complete - text model: {}, vision model: {}, averaging: {}, time: {:.2}ms",
             if text.is_some() {
                 "loaded"
             } else {
@@ -214,10 +411,22 @@ impl AppState {
             } else {
                 "not loaded"
             },
+            match default_avg_method {
+                image_stats::AveragingMethod::Arithmetic => "arithmetic",
+                image_stats::AveragingMethod::Geometric => "geometric",
+            },
             cold_start_time.as_secs_f64() * 1000.0
         );
 
-        Ok(Self { text, vision })
+        Ok(Self {
+            text,
+            vision,
+            default_avg_method,
+            txt_model_path,
+            tokenizer_path,
+            img_model_path,
+            gpu_enabled,
+        })
     }
 }
 
@@ -276,6 +485,7 @@ struct TextEmbedRequest {
 struct TextBatchRequest {
     /// List of texts to embed
     #[schema(example = json!(["Hello world", "Goodbye world"]))]
+    #[serde(alias = "input")]
     inputs: Vec<String>,
     /// Embedding dimension (1-768)
     #[serde(default = "default_dim")]
@@ -330,9 +540,10 @@ struct TextBatchResponse {
 
 #[derive(Deserialize, ToSchema)]
 struct ImageEmbedRequest {
-    /// Image content: URL (http/https), data URL (data:image/...), or raw base64
+    /// Image input: URL (http/https), data URL (data:image/...), or raw base64
     #[schema(example = "https://picsum.photos/400/300")]
-    content: String,
+    #[serde(alias = "content")]
+    input: String,
     /// Embedding dimension (1-768)
     #[serde(default = "default_dim")]
     #[schema(example = 768, minimum = 1, maximum = 768)]
@@ -341,9 +552,11 @@ struct ImageEmbedRequest {
 
 #[derive(Deserialize, ToSchema)]
 struct ImageBatchRequest {
-    /// List of image contents (URLs or base64)
+    /// List of image inputs (URLs or base64)
     #[schema(example = json!(["https://picsum.photos/200/200", "https://picsum.photos/300/400", "https://picsum.photos/300/400"]))]
-    contents: Vec<String>,
+    #[serde(alias = "contents")]
+    #[serde(alias = "input")]
+    inputs: Vec<String>,
     /// Embedding dimension (1-768)
     #[serde(default = "default_dim")]
     #[schema(example = 768, minimum = 1, maximum = 768)]
@@ -374,7 +587,7 @@ struct ImageBatchResponse {
 // Common Types
 // ============================================================================
 
-fn default_dim() -> usize {
+pub fn default_dim() -> usize {
     768
 }
 
@@ -389,13 +602,41 @@ struct HealthResponse {
     /// Vision model loaded
     #[schema(example = true)]
     vision_model: bool,
+    /// GPU enabled
+    #[schema(example = true)]
+    gpu_enabled: bool,
 }
 
 #[derive(Serialize, ToSchema)]
-struct ErrorResponse {
+struct InfoResponse {
+    /// Default averaging method for image stats
+    #[schema(example = "geometric")]
+    averaging: String,
+    /// Text model file path (if loaded)
+    #[schema(example = "models/txt/model_quantized.onnx")]
+    txt_model: Option<String>,
+    /// Tokenizer file path (if loaded)
+    #[schema(example = "models/txt/tokenizer.json")]
+    tokenizer: Option<String>,
+    /// Vision model file path (if loaded)
+    #[schema(example = "models/img/model_quantized.onnx")]
+    img_model: Option<String>,
+    /// Maximum batch size for text embeddings
+    #[schema(example = 1)]
+    txt_max_batch_size: Option<usize>,
+    /// Maximum batch size for image embeddings
+    #[schema(example = 64)]
+    img_max_batch_size: Option<usize>,
+    /// Whether GPU is enabled
+    #[schema(example = true)]
+    gpu_enabled: bool,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct ErrorResponse {
     /// Error message
     #[schema(example = "Tokenization failed")]
-    error: String,
+    pub error: String,
 }
 
 // ============================================================================
@@ -412,11 +653,13 @@ struct ErrorResponse {
     ),
     paths(
         health_handler,
+        info_handler,
         txt_embed_handler,
         txt_batch_handler,
         txt_query_handler,
         img_embed_handler,
         img_batch_handler,
+        image_stats::img_stats_handler,
     ),
     components(schemas(
         TextEmbedRequest,
@@ -429,8 +672,15 @@ struct ErrorResponse {
         ImageBatchRequest,
         ImageBatchResponse,
         HealthResponse,
+        InfoResponse,
         ErrorResponse,
         Prefix,
+        image_stats::ImageStatsRequest,
+        image_stats::ImageStatsResponse,
+        image_stats::AveragingMethod,
+        image_stats::ColorData,
+        image_stats::AverageColorInfo,
+        image_stats::ColorInfo,
     ))
 )]
 struct ApiDoc;
@@ -444,13 +694,9 @@ async fn main() {
     tracing_subscriber::fmt::init();
 
     // Text model configuration
-    // Priority: TXT_MODEL > MODEL > default path
+    // Priority: TXT_MODEL (explicit) > model.onnx (full precision) > model_quantized.onnx (fallback)
     // resolve_model_path handles both CLI (CWD) and double-click (exe-relative) scenarios
-    let txt_model_path = std::env::var("TXT_MODEL")
-        .or_else(|_| std::env::var("MODEL"))
-        .map(PathBuf::from)
-        .map(resolve_model_path)
-        .unwrap_or_else(|_| resolve_model_path("models/txt/model_quantized.onnx"));
+    let txt_model_path = resolve_model_path_with_fallback("TXT_MODEL", "models/txt", "model.onnx");
 
     let tok_path = std::env::var("TOKENIZER")
         .map(PathBuf::from)
@@ -458,23 +704,31 @@ async fn main() {
         .unwrap_or_else(|_| resolve_model_path("models/txt/tokenizer.json"));
 
     // Vision model configuration
-    let img_model_path = std::env::var("IMG_MODEL")
-        .map(PathBuf::from)
-        .map(resolve_model_path)
-        .unwrap_or_else(|_| resolve_model_path("models/img/model_quantized.onnx"));
+    // Priority: IMG_MODEL (explicit) > model.onnx (full precision) > model_quantized.onnx (fallback)
+    let img_model_path = resolve_model_path_with_fallback("IMG_MODEL", "models/img", "model.onnx");
 
     let port: u16 = std::env::var("PORT")
         .ok()
         .and_then(|p| p.parse().ok())
         .unwrap_or(8080);
 
-    let use_gpu = std::env::var("USE_GPU")
-        .map(|v| v == "1" || v.to_lowercase() == "true")
-        .unwrap_or(false);
-
     let disable_cors = std::env::var("DISABLE_CORS")
         .map(|v| matches!(v.to_lowercase().as_str(), "true" | "1" | "yes" | "y"))
         .unwrap_or(false);
+
+    let use_gpu = std::env::var("USE_GPU")
+        .map(|v| matches!(v.to_lowercase().as_str(), "true" | "1" | "yes" | "y"))
+        .unwrap_or(false);
+
+    // Default averaging method for image stats
+    let default_avg_method = std::env::var("AVERAGING")
+        .ok()
+        .and_then(|v| match v.to_lowercase().as_str() {
+            "arithmetic" => Some(image_stats::AveragingMethod::Arithmetic),
+            "geometric" => Some(image_stats::AveragingMethod::Geometric),
+            _ => None,
+        })
+        .unwrap_or(image_stats::AveragingMethod::Geometric);
 
     // Determine which models to load based on file existence
     let txt_model = if txt_model_path.exists() && tok_path.exists() {
@@ -501,32 +755,44 @@ async fn main() {
     };
 
     // Initialize application state
-    let state = match AppState::new(txt_model, tokenizer, img_model, use_gpu).await {
-        Ok(state) => state,
-        Err(e) => {
-            eprintln!("Failed to initialize server: {}", e);
-            std::process::exit(1);
-        }
-    };
+    let state =
+        match AppState::new(txt_model, tokenizer, img_model, default_avg_method, use_gpu).await {
+            Ok(state) => state,
+            Err(e) => {
+                eprintln!("Failed to initialize server: {}", e);
+                std::process::exit(1);
+            }
+        };
 
-    let device = if use_gpu { "GPU" } else { "CPU" };
     let text_status = if state.text.is_some() { "✓" } else { "✗" };
     let vision_status = if state.vision.is_some() { "✓" } else { "✗" };
+    let gpu_status = if state.gpu_enabled {
+        "✓ (CUDA)"
+    } else {
+        "✗ (CPU)"
+    };
 
-    info!(
-        "🚀 Nomic embedding server ready on http://0.0.0.0:{} ({})",
-        port, device
-    );
+    info!("🚀 Nomic embedding server ready on http://0.0.0.0:{}", port);
     info!(
         "   Text model:   {} /txt/embed, /txt/batch, /txt/query",
         text_status
     );
-    info!("   Vision model: {} /img/embed, /img/batch", vision_status);
+    info!(
+        "   Vision model: {} /img/embed, /img/batch, /img/stats",
+        vision_status
+    );
+    info!("   GPU Support:  {}", gpu_status);
+    let body_limit_mb = std::env::var("MAX_BODY_SIZE_MB")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(100);
+    info!("   Max body size: {} MB", body_limit_mb);
     info!("📚 API docs available at http://0.0.0.0:{}/docs", port);
 
-    // Build router
-    let mut app = Router::new()
+    // Build router - base routes
+    let app = Router::new()
         .route("/health", get(health_handler))
+        .route("/info", get(info_handler))
         // Text endpoints (canonical)
         .route("/txt/embed", post(txt_embed_handler))
         .route("/txt/batch", post(txt_batch_handler))
@@ -534,13 +800,18 @@ async fn main() {
         // Image endpoints
         .route("/img/embed", post(img_embed_handler))
         .route("/img/batch", post(img_batch_handler))
+        .route("/img/stats", post(image_stats::img_stats_handler));
+
+    let mut app = app
         // Legacy aliases (silent, undocumented)
         .route("/embed", post(txt_embed_handler))
         .route("/batch", post(txt_batch_handler))
         .route("/query", post(txt_query_handler))
         // OpenAPI
         .route("/openapi.json", get(openapi_handler))
+        .route("/docs/openapi.json", get(openapi_handler))
         .route("/docs", get(docs_handler))
+        .layer(DefaultBodyLimit::max(body_limit_mb * 1024 * 1024))
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 
@@ -619,22 +890,57 @@ fn build_cors_layer() -> CorsLayer {
 }
 
 // ============================================================================
-// HTTP Handlers - Health
+// HTTP Handlers - Status
 // ============================================================================
 
+/// Check server health and model availability
 #[utoipa::path(
     get,
     path = "/health",
     responses(
         (status = 200, description = "Server is healthy", body = HealthResponse)
     ),
-    tag = "health"
+    tag = "status"
 )]
 async fn health_handler(State(state): State<AppState>) -> Json<HealthResponse> {
     Json(HealthResponse {
         status: "OK".to_string(),
         text_model: state.text.is_some(),
         vision_model: state.vision.is_some(),
+        gpu_enabled: state.gpu_enabled,
+    })
+}
+
+/// Get server information including model paths and configuration
+#[utoipa::path(
+    get,
+    path = "/info",
+    responses(
+        (status = 200, description = "Server information", body = InfoResponse)
+    ),
+    tag = "status"
+)]
+async fn info_handler(State(state): State<AppState>) -> Json<InfoResponse> {
+    Json(InfoResponse {
+        averaging: match state.default_avg_method {
+            image_stats::AveragingMethod::Arithmetic => "arithmetic".to_string(),
+            image_stats::AveragingMethod::Geometric => "geometric".to_string(),
+        },
+        txt_model: state
+            .txt_model_path
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string()),
+        tokenizer: state
+            .tokenizer_path
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string()),
+        img_model: state
+            .img_model_path
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string()),
+        txt_max_batch_size: state.text.as_ref().map(|t| t.max_batch_size),
+        img_max_batch_size: state.vision.as_ref().map(|v| v.max_batch_size),
+        gpu_enabled: state.gpu_enabled,
     })
 }
 
@@ -642,6 +948,7 @@ async fn health_handler(State(state): State<AppState>) -> Json<HealthResponse> {
 // HTTP Handlers - Text
 // ============================================================================
 
+/// Generate a single text embedding with configurable prefix and dimension
 #[utoipa::path(
     post,
     path = "/txt/embed",
@@ -674,7 +981,8 @@ async fn txt_embed_handler(
     }
 
     let prefixed_text = format!("{}: {}", req.prefix, req.input);
-    let (mut embedding, tokens) = embed_text(text_state, &prefixed_text)?;
+    let (mut embedding, tokens, tokenize_time, inference_time, postprocess_time) =
+        embed_text(text_state, &prefixed_text)?;
 
     if req.dim < embedding.len() {
         embedding.truncate(req.dim);
@@ -682,7 +990,10 @@ async fn txt_embed_handler(
 
     let total_time = start.elapsed();
     info!(
-        "Text embed timing - total: {:.2}ms",
+        "Text embed timing - tokenize: {:.2}ms, ONNX: {:.2}ms, postprocess: {:.2}ms, total: {:.2}ms",
+        tokenize_time.as_secs_f64() * 1000.0,
+        inference_time.as_secs_f64() * 1000.0,
+        postprocess_time.as_secs_f64() * 1000.0,
         total_time.as_secs_f64() * 1000.0
     );
 
@@ -693,6 +1004,7 @@ async fn txt_embed_handler(
     }))
 }
 
+/// Generate embeddings for multiple texts with configurable prefix and dimension
 #[utoipa::path(
     post,
     path = "/txt/batch",
@@ -724,25 +1036,60 @@ async fn txt_batch_handler(
         ));
     }
 
+    let batch_size = req.inputs.len();
+
+    // Fail fast if quantized model and batch_size > 1 (check this first for better error message)
+    if text_state.variant == ModelVariant::Quantized && batch_size > 1 {
+        return Err(Error(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "Batching is not supported for quantized text models. This model ({:?}) exhibits severe cross-sample interference when batched (~0.5 max diff, ~50-60%% cosine similarity). Use the full precision (FP32) model for batching, or process texts individually (batch_size=1).",
+                state.txt_model_path.as_ref().and_then(|p| p.file_name())
+            ),
+        ));
+    }
+
+    // Check batch size limit
+    if batch_size > text_state.max_batch_size {
+        return Err(Error(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "Batch size {} exceeds maximum allowed batch size of {}",
+                batch_size, text_state.max_batch_size
+            ),
+        ));
+    }
+
     let mut embeddings = Vec::with_capacity(req.inputs.len());
     let mut tokens = Vec::with_capacity(req.inputs.len());
+    let mut total_tokenize = std::time::Duration::ZERO;
+    let mut total_inference = std::time::Duration::ZERO;
+    let mut total_postprocess = std::time::Duration::ZERO;
 
     for text in &req.inputs {
         let prefixed_text = format!("{}: {}", req.prefix, text);
-        let (mut emb, tok) = embed_text(text_state, &prefixed_text)?;
+        let (mut emb, tok, tokenize_time, inference_time, postprocess_time) =
+            embed_text(text_state, &prefixed_text)?;
         if req.dim < emb.len() {
             emb.truncate(req.dim);
         }
         embeddings.push(emb);
         tokens.push(tok);
+        total_tokenize += tokenize_time;
+        total_inference += inference_time;
+        total_postprocess += postprocess_time;
     }
 
     let total_time = start.elapsed();
+    let count = req.inputs.len() as f64;
     info!(
-        "Text batch timing - count: {}, total: {:.2}ms, avg: {:.2}ms",
+        "Text batch timing - count: {}, tokenize: {:.2}ms, ONNX: {:.2}ms, postprocess: {:.2}ms, total: {:.2}ms, avg: {:.2}ms",
         req.inputs.len(),
+        total_tokenize.as_secs_f64() * 1000.0,
+        total_inference.as_secs_f64() * 1000.0,
+        total_postprocess.as_secs_f64() * 1000.0,
         total_time.as_secs_f64() * 1000.0,
-        total_time.as_secs_f64() * 1000.0 / req.inputs.len() as f64
+        total_time.as_secs_f64() * 1000.0 / count
     );
 
     Ok(Json(TextBatchResponse {
@@ -752,6 +1099,7 @@ async fn txt_batch_handler(
     }))
 }
 
+/// Generate a text embedding optimized for search queries (uses search_query prefix)
 #[utoipa::path(
     post,
     path = "/txt/query",
@@ -785,7 +1133,8 @@ async fn txt_query_handler(
 
     // Always use search_query prefix for /query endpoint
     let prefixed_text = format!("search_query: {}", req.input);
-    let (mut embedding, tokens) = embed_text(text_state, &prefixed_text)?;
+    let (mut embedding, tokens, tokenize_time, inference_time, postprocess_time) =
+        embed_text(text_state, &prefixed_text)?;
 
     if req.dim < embedding.len() {
         embedding.truncate(req.dim);
@@ -793,7 +1142,10 @@ async fn txt_query_handler(
 
     let total_time = start.elapsed();
     info!(
-        "Text query timing - total: {:.2}ms",
+        "Text query timing - tokenize: {:.2}ms, ONNX: {:.2}ms, postprocess: {:.2}ms, total: {:.2}ms",
+        tokenize_time.as_secs_f64() * 1000.0,
+        inference_time.as_secs_f64() * 1000.0,
+        postprocess_time.as_secs_f64() * 1000.0,
         total_time.as_secs_f64() * 1000.0
     );
 
@@ -808,6 +1160,7 @@ async fn txt_query_handler(
 // HTTP Handlers - Image
 // ============================================================================
 
+/// Generate a single image embedding from URL or base64-encoded image
 #[utoipa::path(
     post,
     path = "/img/embed",
@@ -840,17 +1193,16 @@ async fn img_embed_handler(
     }
 
     let decode_start = Instant::now();
-    let image = decode_image(&req.content).await?;
+    let image = decode_image(&req.input).await?;
     let decode_time = decode_start.elapsed();
 
-    let inference_start = Instant::now();
-    let mut embedding = embed_image(vision_state, &image)?;
-    let inference_time = inference_start.elapsed();
+    let (mut embedding, preprocess_time, onnx_time) = embed_image(vision_state, &image)?;
 
     info!(
-        "Image embed timing - decode: {:.2}ms, inference: {:.2}ms, total: {:.2}ms",
+        "Image embed timing - decode: {:.2}ms, preprocess: {:.2}ms, ONNX: {:.2}ms, total: {:.2}ms",
         decode_time.as_secs_f64() * 1000.0,
-        inference_time.as_secs_f64() * 1000.0,
+        preprocess_time.as_secs_f64() * 1000.0,
+        onnx_time.as_secs_f64() * 1000.0,
         start.elapsed().as_secs_f64() * 1000.0
     );
 
@@ -864,6 +1216,7 @@ async fn img_embed_handler(
     }))
 }
 
+/// Generate embeddings for multiple images from URLs or base64-encoded images
 #[utoipa::path(
     post,
     path = "/img/batch",
@@ -895,15 +1248,33 @@ async fn img_batch_handler(
         ));
     }
 
-    let mut embeddings = Vec::with_capacity(req.contents.len());
+    let batch_size = req.inputs.len();
 
-    for content in &req.contents {
-        let image = decode_image(content).await?;
-        let mut emb = embed_image(vision_state, &image)?;
+    // Check batch size limit
+    if batch_size > vision_state.max_batch_size {
+        return Err(Error(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "Batch size {} exceeds maximum allowed batch size of {}",
+                batch_size, vision_state.max_batch_size
+            ),
+        ));
+    }
+
+    // Decode all images first
+    let mut images = Vec::with_capacity(req.inputs.len());
+    for input in &req.inputs {
+        images.push(decode_image(input).await?);
+    }
+
+    // Batch inference (more efficient than sequential)
+    let mut embeddings = embed_image_batch(vision_state, &images)?;
+
+    // Truncate to requested dimension
+    for emb in &mut embeddings {
         if req.dim < emb.len() {
             emb.truncate(req.dim);
         }
-        embeddings.push(emb);
     }
 
     Ok(Json(ImageBatchResponse {
@@ -916,12 +1287,81 @@ async fn img_batch_handler(
 // HTTP Handlers - OpenAPI
 // ============================================================================
 
-async fn openapi_handler() -> Json<serde_json::Value> {
+async fn openapi_handler(State(state): State<AppState>) -> Json<serde_json::Value> {
     let openapi = ApiDoc::openapi();
     let mut spec: serde_json::Value =
         serde_json::to_value(&openapi).unwrap_or(serde_json::json!({}));
     if let Some(obj) = spec.as_object_mut() {
         obj.insert("openapi".to_string(), serde_json::json!("3.1.0"));
+
+        // Update the averaging_method example to reflect the runtime default
+        if let Some(components) = obj.get_mut("components") {
+            if let Some(components_obj) = components.as_object_mut() {
+                if let Some(schemas) = components_obj.get_mut("schemas") {
+                    if let Some(schemas_obj) = schemas.as_object_mut() {
+                        if let Some(image_stats_request) = schemas_obj.get_mut("ImageStatsRequest")
+                        {
+                            if let Some(props) = image_stats_request.get_mut("properties") {
+                                if let Some(averaging_method) = props.get_mut("averaging_method") {
+                                    if let Some(averaging_method_obj) =
+                                        averaging_method.as_object_mut()
+                                    {
+                                        let default_example = match state.default_avg_method {
+                                            image_stats::AveragingMethod::Arithmetic => {
+                                                "arithmetic"
+                                            }
+                                            image_stats::AveragingMethod::Geometric => "geometric",
+                                        };
+                                        averaging_method_obj.insert(
+                                            "example".to_string(),
+                                            serde_json::json!(default_example),
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        // Also update AverageColorInfo.method example
+                        if let Some(avg_color_info) = schemas_obj.get_mut("AverageColorInfo") {
+                            if let Some(props) = avg_color_info.get_mut("properties") {
+                                if let Some(method) = props.get_mut("method") {
+                                    if let Some(method_obj) = method.as_object_mut() {
+                                        let default_example = match state.default_avg_method {
+                                            image_stats::AveragingMethod::Arithmetic => {
+                                                "arithmetic"
+                                            }
+                                            image_stats::AveragingMethod::Geometric => "geometric",
+                                        };
+                                        method_obj.insert(
+                                            "example".to_string(),
+                                            serde_json::json!(default_example),
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        // Also update InfoResponse.averaging example
+                        if let Some(info_response) = schemas_obj.get_mut("InfoResponse") {
+                            if let Some(props) = info_response.get_mut("properties") {
+                                if let Some(averaging) = props.get_mut("averaging") {
+                                    if let Some(averaging_obj) = averaging.as_object_mut() {
+                                        let default_example = match state.default_avg_method {
+                                            image_stats::AveragingMethod::Arithmetic => {
+                                                "arithmetic"
+                                            }
+                                            image_stats::AveragingMethod::Geometric => "geometric",
+                                        };
+                                        averaging_obj.insert(
+                                            "example".to_string(),
+                                            serde_json::json!(default_example),
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
     Json(spec)
 }
@@ -1101,8 +1541,20 @@ fn mean_pool(embeddings: &[f32], attention_mask: &[i64], seq_len: usize) -> Vec<
     pooled
 }
 
-/// Embed single text, returns 768-dim embedding
-fn embed_text(state: &TextState, text: &str) -> Result<(Vec<f32>, usize), Error> {
+/// Embed single text, returns 768-dim embedding and timing info
+fn embed_text(
+    state: &TextState,
+    text: &str,
+) -> Result<
+    (
+        Vec<f32>,
+        usize,
+        std::time::Duration,
+        std::time::Duration,
+        std::time::Duration,
+    ),
+    Error,
+> {
     let tokenize_start = Instant::now();
     let encoding = state
         .tokenizer
@@ -1117,9 +1569,7 @@ fn embed_text(state: &TextState, text: &str) -> Result<(Vec<f32>, usize), Error>
         .iter()
         .map(|&i| i as i64)
         .collect();
-    let tokenize_time = tokenize_start.elapsed();
 
-    let prepare_start = Instant::now();
     let input_shape = vec![1i64, token_count as i64];
     let input_ids_value: Value = Value::from_array((input_shape.clone(), ids))?.into();
     let token_type_ids_value: Value =
@@ -1141,7 +1591,7 @@ fn embed_text(state: &TextState, text: &str) -> Result<(Vec<f32>, usize), Error>
             SessionInputValue::from(attention_mask_value),
         ),
     ];
-    let prepare_time = prepare_start.elapsed();
+    let tokenize_time = tokenize_start.elapsed();
 
     let inference_start = Instant::now();
     let mut session_guard = state.session.lock().unwrap();
@@ -1172,15 +1622,13 @@ fn embed_text(state: &TextState, text: &str) -> Result<(Vec<f32>, usize), Error>
     l2_normalize(&mut embedding);
     let postprocess_time = postprocess_start.elapsed();
 
-    info!(
-        "Text inference timing - tokenize: {:.2}ms, prepare: {:.2}ms, ONNX: {:.2}ms, postprocess: {:.2}ms",
-        tokenize_time.as_secs_f64() * 1000.0,
-        prepare_time.as_secs_f64() * 1000.0,
-        inference_time.as_secs_f64() * 1000.0,
-        postprocess_time.as_secs_f64() * 1000.0
-    );
-
-    Ok((embedding, token_count))
+    Ok((
+        embedding,
+        token_count,
+        tokenize_time,
+        inference_time,
+        postprocess_time,
+    ))
 }
 
 // ============================================================================
@@ -1188,7 +1636,7 @@ fn embed_text(state: &TextState, text: &str) -> Result<(Vec<f32>, usize), Error>
 // ============================================================================
 
 /// Preprocess image for CLIP-style model
-fn preprocess_image(image: &DynamicImage) -> Vec<f32> {
+pub fn preprocess_image(image: &DynamicImage) -> Vec<f32> {
     // Convert to RGB
     let rgb = image.to_rgb8();
 
@@ -1239,7 +1687,7 @@ fn preprocess_image(image: &DynamicImage) -> Vec<f32> {
 }
 
 /// L2 normalize a vector
-fn l2_normalize(vec: &mut Vec<f32>) {
+pub fn l2_normalize(vec: &mut Vec<f32>) {
     let norm: f32 = vec.iter().map(|x| x * x).sum::<f32>().sqrt();
     if norm > 1e-9 {
         for val in vec.iter_mut() {
@@ -1248,8 +1696,11 @@ fn l2_normalize(vec: &mut Vec<f32>) {
     }
 }
 
-/// Embed single image, returns 768-dim L2-normalized embedding
-fn embed_image(state: &VisionState, image: &DynamicImage) -> Result<Vec<f32>, Error> {
+/// Embed single image, returns 768-dim L2-normalized embedding and timing info
+pub fn embed_image(
+    state: &VisionState,
+    image: &DynamicImage,
+) -> Result<(Vec<f32>, std::time::Duration, std::time::Duration), Error> {
     let preprocess_start = Instant::now();
     let tensor = preprocess_image(image);
     let preprocess_time = preprocess_start.elapsed();
@@ -1268,11 +1719,6 @@ fn embed_image(state: &VisionState, image: &DynamicImage) -> Result<Vec<f32>, Er
     let outputs = session_guard.run(SessionInputs::from(inputs_vec))?;
     let inference_time = inference_start.elapsed();
 
-    info!(
-        "Vision inference timing - preprocess: {:.2}ms, ONNX: {:.2}ms",
-        preprocess_time.as_secs_f64() * 1000.0,
-        inference_time.as_secs_f64() * 1000.0
-    );
     let (output_shape, raw_output) = outputs[0].try_extract_tensor::<f32>()?.to_owned();
 
     let output_vec = raw_output.to_vec();
@@ -1297,5 +1743,94 @@ fn embed_image(state: &VisionState, image: &DynamicImage) -> Result<Vec<f32>, Er
     // L2 normalize
     l2_normalize(&mut embedding);
 
-    Ok(embedding)
+    Ok((embedding, preprocess_time, inference_time))
+}
+
+/// Embed multiple images in a batch, returns list of 768-dim L2-normalized embeddings
+///
+/// Note: FP32 models batch perfectly (no interference). Quantized models may show
+/// ~1% difference (cosine similarity ~0.99) due to quantization artifacts.
+pub fn embed_image_batch(
+    state: &VisionState,
+    images: &[DynamicImage],
+) -> Result<Vec<Vec<f32>>, Error> {
+    if images.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let preprocess_start = Instant::now();
+    let mut tensors = Vec::with_capacity(images.len());
+    for image in images {
+        tensors.push(preprocess_image(image));
+    }
+    let preprocess_time = preprocess_start.elapsed();
+
+    // Stack tensors: [N, 3, 224, 224]
+    let batch_size = images.len();
+    let mut batch_tensor = Vec::with_capacity(batch_size * 3 * IMAGE_SIZE * IMAGE_SIZE);
+    for tensor in tensors {
+        batch_tensor.extend_from_slice(&tensor);
+    }
+
+    let input_shape = vec![batch_size as i64, 3, IMAGE_SIZE as i64, IMAGE_SIZE as i64];
+    let pixel_values: Value = Value::from_array((input_shape, batch_tensor))?.into();
+
+    let inputs_vec = vec![(
+        "pixel_values".to_string(),
+        SessionInputValue::from(pixel_values),
+    )];
+
+    let inference_start = Instant::now();
+    let mut session_guard = state.session.lock().unwrap();
+    let outputs = session_guard.run(SessionInputs::from(inputs_vec))?;
+    let inference_time = inference_start.elapsed();
+
+    info!(
+        "Vision batch inference timing - preprocess: {:.2}ms, ONNX: {:.2}ms, batch_size: {}",
+        preprocess_time.as_secs_f64() * 1000.0,
+        inference_time.as_secs_f64() * 1000.0,
+        batch_size
+    );
+
+    let (output_shape, raw_output) = outputs[0].try_extract_tensor::<f32>()?.to_owned();
+    let output_vec = raw_output.to_vec();
+    let shape_dims: Vec<usize> = output_shape.iter().map(|&d| d as usize).collect();
+
+    // Extract CLS token for each image in batch
+    let mut embeddings = Vec::with_capacity(batch_size);
+    match shape_dims.as_slice() {
+        [n, 768] if *n == batch_size => {
+            // Output is [N, 768] - already extracted CLS tokens
+            for i in 0..batch_size {
+                let start = i * 768;
+                let end = start + 768;
+                embeddings.push(output_vec[start..end].to_vec());
+            }
+        }
+        [n, _num_tokens, 768] if *n == batch_size => {
+            // Output is [N, num_tokens, 768] - extract CLS token (first token) for each
+            let tokens_per_image = shape_dims[1];
+            for i in 0..batch_size {
+                let start = i * tokens_per_image * 768;
+                let end = start + 768;
+                embeddings.push(output_vec[start..end].to_vec());
+            }
+        }
+        _ => {
+            return Err(Error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!(
+                    "Unexpected vision model output shape: {:?} (expected batch_size={})",
+                    shape_dims, batch_size
+                ),
+            ));
+        }
+    }
+
+    // L2 normalize each embedding
+    for embedding in &mut embeddings {
+        l2_normalize(embedding);
+    }
+
+    Ok(embeddings)
 }

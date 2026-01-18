@@ -33,3 +33,4 @@ models/img/*.onnx
 
 # Keep tokenizer.json (text model) and preprocessor_config.json (vision model)
 # These are NOT ignored - they're needed at runtime
+bin/

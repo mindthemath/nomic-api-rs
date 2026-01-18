@@ -3,7 +3,7 @@ name: Release Artifacts
 on:
   push:
     tags:
-      - 'v202*'
+      - "v202*"
   workflow_dispatch:
 
 jobs:
@@ -12,25 +12,12 @@ jobs:
       matrix:
         include:
           - platform: linux/amd64
-            artifact: linux-x64-quantized
-            runner: ubuntu-latest
-            txt_model: model_quantized.onnx
-            img_model: model_quantized.onnx
-          - platform: linux/amd64
-            artifact: linux-x64-full
-            runner: ubuntu-latest
-            txt_model: model.onnx
-            img_model: model.onnx
+            artifact: linux-x64
+            runner: ubuntu-24.04
           - platform: linux/arm64
-            artifact: linux-arm64-quantized
+            artifact: linux-arm64
             runner: ubuntu-24.04-arm
-            txt_model: model_quantized.onnx
-            img_model: model_quantized.onnx
-          - platform: linux/arm64
-            artifact: linux-arm64-full
-            runner: ubuntu-24.04-arm
-            txt_model: model.onnx
-            img_model: model.onnx
+
     runs-on: ${{ matrix.runner }}
     env:
       VERSION: ${{ github.ref_name }}
@@ -45,72 +32,48 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Download model files (targeted)
+      - name: Create placeholder model files
         run: |
-          # Download only the models needed for this build variant
-          if [[ "${{ matrix.txt_model }}" == "model_quantized.onnx" ]]; then
-            # Quantized build - download quantized models only
-            bash scripts/download_text_models.sh quantized
-            bash scripts/download_vision_models.sh quantized
-          else
-            # Full precision build - download fp32 models only
-            bash scripts/download_text_models.sh fp32
-            bash scripts/download_vision_models.sh fp32
-          fi
-
-      - name: Verify model files exist
-        run: |
-          # Verify the required model files exist before building
-          echo "Verifying model files for build..."
-          ls -lh models/txt/${{ matrix.txt_model }}
-          ls -lh models/txt/tokenizer.json
-          ls -lh models/img/${{ matrix.img_model }}
-          echo "✓ All required model files present"
+          # Create empty placeholder files to satisfy Dockerfile COPY commands
+          # We only extract the binary, so actual model content isn't needed
+          mkdir -p models/txt models/img
+          touch models/txt/model_quantized.onnx
+          touch models/txt/tokenizer.json
+          touch models/img/model_quantized.onnx
+          echo "✓ Placeholder model files created for Docker build"
 
       - name: Build image
         run: |
           # Build directly with docker (matching makefile approach but bypassing dependencies)
-          # Both platforms use native docker build (no buildx needed)
+          # Use quantized models for build (models packaged separately)
           docker build --target runtime-cpu \
-            --build-arg TXT_MODEL_FILE=${{ matrix.txt_model }} \
-            --build-arg IMG_MODEL_FILE=${{ matrix.img_model }} \
+            --build-arg TXT_MODEL_FILE=model_quantized.onnx \
+            --build-arg IMG_MODEL_FILE=model_quantized.onnx \
             -t nomic-embed-v1-5:${{ matrix.artifact }} \
             .
 
-      - name: Extract artifacts
+      - name: Extract binary
         run: |
           docker create --name temp-extract nomic-embed-v1-5:${{ matrix.artifact }}
           mkdir -p release
           docker cp temp-extract:/app/nomic-serve release/
-          docker cp temp-extract:/app/models release/
           docker rm temp-extract
 
-      - name: Create tarball
+      - name: Create binary tarball
         run: |
           cd release
           mkdir -p nomic-embed-v1.5-${VERSION}-${{ matrix.artifact }}
-          mv nomic-serve models nomic-embed-v1.5-${VERSION}-${{ matrix.artifact }}/
+          mv nomic-serve nomic-embed-v1.5-${VERSION}-${{ matrix.artifact }}/
           tar -czvf ../nomic-embed-v1.5-${VERSION}-${{ matrix.artifact }}.tar.gz nomic-embed-v1.5-${VERSION}-${{ matrix.artifact }}
 
-      - name: Upload artifact
+      - name: Upload binary artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
           path: nomic-embed-v1.5-*.tar.gz
 
   build-macos:
-    strategy:
-      matrix:
-        include:
-          - artifact: macos-arm64-quantized
-            runner: macos-latest
-            txt_model: model_quantized.onnx
-            img_model: model_quantized.onnx
-          - artifact: macos-arm64-full
-            runner: macos-latest
-            txt_model: model.onnx
-            img_model: model.onnx
-    runs-on: ${{ matrix.runner }}
+    runs-on: macos-latest
     env:
       VERSION: ${{ github.ref_name }}
     steps:
@@ -127,47 +90,83 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Download model files (targeted)
+      - name: Build binary
+        run: cargo build --release
+
+      - name: Create binary tarball
         run: |
-          # Download only the models needed for this build variant
-          if [[ "${{ matrix.txt_model }}" == "model_quantized.onnx" ]]; then
-            # Quantized build - download quantized models only
+          mkdir -p release/nomic-embed-v1.5-${VERSION}-macos-arm64
+          cp target/release/nomic-serve release/nomic-embed-v1.5-${VERSION}-macos-arm64/
+          cd release
+          tar -czvf ../nomic-embed-v1.5-${VERSION}-macos-arm64.tar.gz nomic-embed-v1.5-${VERSION}-macos-arm64
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-arm64
+          path: nomic-embed-v1.5-*.tar.gz
+
+  package-models:
+    strategy:
+      matrix:
+        include:
+          - variant: quantized
+            artifact: models-quantized
+          - variant: full
+            artifact: models-full
+
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ github.ref_name }}
+    steps:
+      - name: Sanitize version
+        run: |
+          # Remove 'v' prefix and sanitize slashes
+          VERSION=${VERSION#v}  # Strip leading 'v' if present
+          VERSION=${VERSION//\//-}  # Replace slashes with hyphens
+          echo "VERSION=${VERSION}" >> $GITHUB_ENV
+
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Download model files
+        run: |
+          if [[ "${{ matrix.variant }}" == "quantized" ]]; then
             bash scripts/download_text_models.sh quantized
             bash scripts/download_vision_models.sh quantized
           else
-            # Full precision build - download fp32 models only
             bash scripts/download_text_models.sh fp32
             bash scripts/download_vision_models.sh fp32
           fi
 
       - name: Verify model files exist
         run: |
-          # Verify the required model files exist before building
-          echo "Verifying model files for build..."
-          ls -lh models/txt/${{ matrix.txt_model }}
+          echo "Verifying model files for ${{ matrix.variant }} variant..."
+          if [[ "${{ matrix.variant }}" == "quantized" ]]; then
+            ls -lh models/txt/model_quantized.onnx
+            ls -lh models/img/model_quantized.onnx
+          else
+            ls -lh models/txt/model.onnx
+            ls -lh models/img/model.onnx
+          fi
           ls -lh models/txt/tokenizer.json
-          ls -lh models/img/${{ matrix.img_model }}
           echo "✓ All required model files present"
 
-      - name: Build binary
-        run: cargo build --release
-
-      - name: Package artifacts
+      - name: Create models tarball
         run: |
           mkdir -p release/nomic-embed-v1.5-${VERSION}-${{ matrix.artifact }}
-          cp target/release/nomic-serve release/nomic-embed-v1.5-${VERSION}-${{ matrix.artifact }}/
           cp -r models release/nomic-embed-v1.5-${VERSION}-${{ matrix.artifact }}/
           cd release
           tar -czvf ../nomic-embed-v1.5-${VERSION}-${{ matrix.artifact }}.tar.gz nomic-embed-v1.5-${VERSION}-${{ matrix.artifact }}
 
-      - name: Upload artifact
+      - name: Upload models artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
           path: nomic-embed-v1.5-*.tar.gz
 
   release:
-    needs: [build-linux, build-macos]
+    needs: [build-linux, build-macos, package-models]
     if: startsWith(github.ref, 'refs/tags/v202')
     runs-on: ubuntu-latest
     permissions:
@@ -200,35 +199,90 @@ jobs:
 
             ## Installation
 
-            Download the tarball for your architecture and model variant:
+            **Important:** You need to download **both** a binary and a models package, then combine them.
+
+            ### Step 1: Download Binary
+
+            Download the binary for your platform:
 
             ```bash
-            # x86_64 - Quantized (smaller, faster, ~99% quality)
-            tar -xzf nomic-embed-v1.5-${{ env.VERSION }}-linux-x64-quantized.tar.gz
+            # Linux x86_64
+            tar -xzf nomic-embed-v1.5-${{ env.VERSION }}-linux-x64.tar.gz
 
-            # x86_64 - Full precision (larger, best quality)
-            tar -xzf nomic-embed-v1.5-${{ env.VERSION }}-linux-x64-full.tar.gz
+            # Linux ARM64 (Raspberry Pi, AWS Graviton, Apple Silicon Linux VMs)
+            tar -xzf nomic-embed-v1.5-${{ env.VERSION }}-linux-arm64.tar.gz
 
-            # ARM64 - Quantized (Raspberry Pi, AWS Graviton, Apple Silicon Linux VMs)
-            tar -xzf nomic-embed-v1.5-${{ env.VERSION }}-linux-arm64-quantized.tar.gz
+            # macOS (Apple Silicon M1/M2/M3)
+            tar -xzf nomic-embed-v1.5-${{ env.VERSION }}-macos-arm64.tar.gz
+            ```
 
-            # ARM64 - Full precision
-            tar -xzf nomic-embed-v1.5-${{ env.VERSION }}-linux-arm64-full.tar.gz
+            ### Step 2: Download Models
 
-            # macOS (Apple Silicon M1/M2/M3) - Quantized
-            tar -xzf nomic-embed-v1.5-${{ env.VERSION }}-macos-arm64-quantized.tar.gz
+            Download **one** of the model packages (choose based on your needs):
 
-            # macOS (Apple Silicon M1/M2/M3) - Full precision
-            tar -xzf nomic-embed-v1.5-${{ env.VERSION }}-macos-arm64-full.tar.gz
+            ```bash
+            # Quantized models (smaller, faster, ~99% quality) - Recommended for most use cases
+            tar -xzf nomic-embed-v1.5-${{ env.VERSION }}-models-quantized.tar.gz
+
+            # OR Full precision models (larger, best quality, fp32 precision)
+            tar -xzf nomic-embed-v1.5-${{ env.VERSION }}-models-full.tar.gz
+            ```
+
+            ### Step 3: Combine Binary and Models
+
+            Extract both archives into the same directory:
+
+            ```bash
+            # Example: Extract both to the same location
+            mkdir -p nomic-embed-v1.5-${{ env.VERSION }}
+            cd nomic-embed-v1.5-${{ env.VERSION }}
+
+            # Extract binary (creates nomic-embed-v1.5-${{ env.VERSION }}-<platform>/nomic-serve)
+            tar -xzf ../nomic-embed-v1.5-${{ env.VERSION }}-linux-x64.tar.gz
+
+            # Extract models (creates nomic-embed-v1.5-${{ env.VERSION }}-models-<variant>/models/)
+            tar -xzf ../nomic-embed-v1.5-${{ env.VERSION }}-models-quantized.tar.gz
+
+            # Move binary and models to the same directory
+            mv nomic-embed-v1.5-${{ env.VERSION }}-linux-x64/nomic-serve .
+            mv nomic-embed-v1.5-${{ env.VERSION }}-models-quantized/models .
+            ```
+
+            **Alternative (simpler):** Extract both archives and copy files manually:
+
+            ```bash
+            # Extract binary
+            tar -xzf nomic-embed-v1.5-${{ env.VERSION }}-linux-x64.tar.gz
+
+            # Extract models
+            tar -xzf nomic-embed-v1.5-${{ env.VERSION }}-models-quantized.tar.gz
+
+            # Copy models into binary directory
+            cp -r nomic-embed-v1.5-${{ env.VERSION }}-models-quantized/models \
+                  nomic-embed-v1.5-${{ env.VERSION }}-linux-x64/
+
+            # Your final structure should be:
+            # nomic-embed-v1.5-${{ env.VERSION }}-linux-x64/
+            #   ├── nomic-serve
+            #   └── models/
+            #       ├── txt/
+            #       │   ├── model_quantized.onnx (or model.onnx)
+            #       │   └── tokenizer.json
+            #       └── img/
+            #           └── model_quantized.onnx (or model.onnx)
             ```
 
             ## Running
 
             ```bash
-            cd nomic-embed-v1.5-*
+            cd nomic-embed-v1.5-${{ env.VERSION }}-<platform>
             ./nomic-serve
             # Server starts on http://localhost:8080
             ```
+
+            The server will automatically detect which model files are present.
+            If both `model.onnx` and `model_quantized.onnx` exist, it will prefer the full precision model.
+            You can override this by setting `TXT_MODEL` and `IMG_MODEL` environment variables explicitly.
 
             ## API Endpoints
 
@@ -238,18 +292,17 @@ jobs:
             - `POST /img/embed` - Single image embedding
             - `POST /img/batch` - Batch image embeddings
             - `GET /health` - Health check
+            - `GET /info` - Server information (model paths, configuration)
             - `GET /docs` - Swagger UI
 
             ## Environment Variables
 
             - `PORT` - Server port (default: 8080)
-            - `TXT_MODEL` - Path to text ONNX model (default depends on variant: `model_quantized.onnx` or `model.onnx`)
+            - `TXT_MODEL` - Path to text ONNX model (optional, auto-detects `model.onnx` or `model_quantized.onnx`)
             - `TOKENIZER` - Path to tokenizer file (default: models/txt/tokenizer.json)
-            - `IMG_MODEL` - Path to vision ONNX model (default depends on variant: `model_quantized.onnx` or `model.onnx`)
-            - `USE_GPU` - Set to 1 to enable GPU (requires CUDA drivers)
+            - `IMG_MODEL` - Path to vision ONNX model (optional, auto-detects `model.onnx` or `model_quantized.onnx`)
+            - `AVERAGING` - Averaging method for image color statistics: `arithmetic` or `geometric` (default: `geometric`)
 
             **Model Variants:**
-            - **Quantized** (`*-quantized.tar.gz`): Smaller files, faster inference, ~99% quality. Recommended for most use cases.
-            - **Full** (`*-full.tar.gz`): Larger files, best quality (fp32 precision). Use for maximum accuracy.
-            
-            **Note**: This release includes CPU-only runtime. For GPU support, use the Docker images (`mindthemath/nomic-embed-v1.5-rs:*-gpu`) or manually install CUDA libraries.
+            - **Quantized** (`models-quantized.tar.gz`): ~224MB total (text: 131MB, vision: 92MB, tokenizer: 696KB), faster inference, ~99% quality. Recommended for most use cases.
+            - **Full** (`models-full.tar.gz`): ~880MB total (text: 522MB, vision: 357MB, tokenizer: 696KB), best quality (fp32 precision). Use for maximum accuracy.
