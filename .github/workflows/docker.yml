@@ -3,34 +3,98 @@ name: Build and Push Docker Images
 on:
   push:
     tags:
-      - "v202*"  # Trigger on version tags
-  workflow_dispatch:  # Allow manual trigger
+      - "v202*" # Trigger on version tags
+  workflow_dispatch:
     inputs:
       version:
-        description: 'Release version (e.g., 20260118) or "latest"'
-        required: false
-        default: 'latest'
+        description: "Release version (e.g., 20260118)"
+        required: true
 
 env:
   DOCKER_IMAGE: mindthemath/nomic-embed-v1.5
 
 jobs:
-  build-and-push:
+  build-cpu:
     strategy:
       matrix:
         include:
-          - platform: linux-x64
-            docker_platform: linux/amd64
-            variant: quantized
-          - platform: linux-x64
-            docker_platform: linux/amd64
-            variant: full
-          - platform: linux-arm64
-            docker_platform: linux/arm64
-            variant: quantized
-          - platform: linux-arm64
-            docker_platform: linux/arm64
-            variant: full
+          - variant: full
+            suffix: ""
+            convenience_tag: cpu
+          - variant: quantized
+            suffix: "-quantized"
+            convenience_tag: slim
+
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to DockerHub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Extract version
+        id: version
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            VERSION="${{ github.event.inputs.version }}"
+            if [ -z "$VERSION" ]; then
+              echo "ERROR: Version is required"
+              exit 1
+            fi
+            echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            VERSION=${GITHUB_REF#refs/tags/v}
+            echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          else
+            echo "ERROR: Version must be specified"
+            exit 1
+          fi
+
+      - name: Build and push CPU image (multi-arch)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile.release
+          platforms: linux/amd64,linux/arm64
+          target: runtime-cpu
+          build-args: |
+            GITHUB_REPOSITORY=${{ github.repository }}
+            VERSION=${{ steps.version.outputs.version }}
+            MODEL_VARIANT=${{ matrix.variant }}
+          push: true
+          tags: |
+            ${{ env.DOCKER_IMAGE }}:${{ steps.version.outputs.version }}-cpu${{ matrix.suffix }}
+            ${{ env.DOCKER_IMAGE }}:${{ matrix.convenience_tag }}
+          cache-from: type=gha,scope=cpu-${{ matrix.variant }}
+          cache-to: type=gha,mode=max,scope=cpu-${{ matrix.variant }}
+
+  build-gpu:
+    strategy:
+      matrix:
+        include:
+          - variant: full
+            suffix: ""
+            convenience_tags: |
+              gpu
+              latest
+          - variant: quantized
+            suffix: "-quantized"
+            convenience_tags: |
+              quantized
 
     runs-on: ubuntu-latest
     permissions:
@@ -54,107 +118,93 @@ jobs:
         id: version
         run: |
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+            VERSION="${{ github.event.inputs.version }}"
+            if [ -z "$VERSION" ]; then
+              echo "ERROR: Version is required"
+              exit 1
+            fi
+            echo "version=${VERSION}" >> $GITHUB_OUTPUT
           elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
-            # Remove 'v' prefix from tag (e.g., v20260118 -> 20260118)
             VERSION=${GITHUB_REF#refs/tags/v}
             echo "version=${VERSION}" >> $GITHUB_OUTPUT
           else
-            echo "version=latest" >> $GITHUB_OUTPUT
+            echo "ERROR: Version must be specified"
+            exit 1
           fi
 
-      - name: Set model variant
-        id: model_variant
+      - name: Build convenience tags
+        id: tags
         run: |
-          echo "variant=${{ matrix.variant }}" >> $GITHUB_OUTPUT
-
-      - name: Build CPU image tags
-        id: cpu_tags
-        run: |
-          TAGS="${{ env.DOCKER_IMAGE }}:${{ steps.version.outputs.version }}-${{ matrix.platform }}-${{ steps.model_variant.outputs.variant }}-cpu"
-          TAGS="$TAGS"$'\n'"${{ env.DOCKER_IMAGE }}:${{ steps.version.outputs.version }}-${{ steps.model_variant.outputs.variant }}-cpu"
-          TAGS="$TAGS"$'\n'"${{ env.DOCKER_IMAGE }}:${{ steps.version.outputs.version }}-cpu"
-          if [[ "${{ steps.model_variant.outputs.variant }}" == "quantized" ]]; then
-            TAGS="$TAGS"$'\n'"${{ env.DOCKER_IMAGE }}:latest-cpu"
-          fi
+          TAGS="${{ env.DOCKER_IMAGE }}:${{ steps.version.outputs.version }}-gpu${{ matrix.suffix }}"
+          while IFS= read -r tag; do
+            if [ -n "$tag" ]; then
+              TAGS="$TAGS"$'\n'"${{ env.DOCKER_IMAGE }}:${tag}"
+            fi
+          done <<< "${{ matrix.convenience_tags }}"
           echo "tags<<EOF" >> $GITHUB_OUTPUT
           echo "$TAGS" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
-      - name: Build CPU image
+      - name: Build and push GPU image (x64 only)
         uses: docker/build-push-action@v5
         with:
           context: .
           file: ./Dockerfile.release
-          platforms: ${{ matrix.docker_platform }}
-          target: runtime-cpu
-          build-args: |
-            GITHUB_REPOSITORY=${{ github.repository }}
-            VERSION=${{ steps.version.outputs.version }}
-            MODEL_VARIANT=${{ steps.model_variant.outputs.variant }}
-            PLATFORM=${{ matrix.platform }}
-          push: true
-          tags: ${{ steps.cpu_tags.outputs.tags }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Build GPU image tags
-        if: matrix.platform == 'linux-x64'
-        id: gpu_tags
-        run: |
-          TAGS="${{ env.DOCKER_IMAGE }}:${{ steps.version.outputs.version }}-${{ matrix.platform }}-${{ steps.model_variant.outputs.variant }}-gpu"
-          TAGS="$TAGS"$'\n'"${{ env.DOCKER_IMAGE }}:${{ steps.version.outputs.version }}-${{ steps.model_variant.outputs.variant }}-gpu"
-          TAGS="$TAGS"$'\n'"${{ env.DOCKER_IMAGE }}:${{ steps.version.outputs.version }}-gpu"
-          if [[ "${{ steps.model_variant.outputs.variant }}" == "quantized" ]]; then
-            TAGS="$TAGS"$'\n'"${{ env.DOCKER_IMAGE }}:latest-gpu"
-          fi
-          echo "tags<<EOF" >> $GITHUB_OUTPUT
-          echo "$TAGS" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
-
-      - name: Build GPU image
-        if: matrix.platform == 'linux-x64'
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./Dockerfile.release
-          platforms: ${{ matrix.docker_platform }}
+          platforms: linux/amd64
           target: runtime-gpu
           build-args: |
             GITHUB_REPOSITORY=${{ github.repository }}
             VERSION=${{ steps.version.outputs.version }}
-            MODEL_VARIANT=${{ steps.model_variant.outputs.variant }}
-            PLATFORM=${{ matrix.platform }}
+            MODEL_VARIANT=${{ matrix.variant }}
           push: true
-          tags: ${{ steps.gpu_tags.outputs.tags }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          tags: ${{ steps.tags.outputs.tags }}
+          cache-from: type=gha,scope=gpu-${{ matrix.variant }}
+          cache-to: type=gha,mode=max,scope=gpu-${{ matrix.variant }}
+
+  summary:
+    needs: [build-cpu, build-gpu]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Extract version
+        id: version
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+          fi
 
       - name: Summary
-        if: matrix.platform == 'linux-x64' && matrix.variant == 'quantized'
         run: |
-          echo "## Docker Images Built and Pushed" >> $GITHUB_STEP_SUMMARY
+          echo "## Docker Images Published" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "Version: \`${{ steps.version.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### CPU Images" >> $GITHUB_STEP_SUMMARY
-          echo "- \`${{ env.DOCKER_IMAGE }}:${{ steps.version.outputs.version }}-cpu\` (latest)" >> $GITHUB_STEP_SUMMARY
-          echo "- \`${{ env.DOCKER_IMAGE }}:latest-cpu\`" >> $GITHUB_STEP_SUMMARY
+          echo "### CPU Images (multi-arch: amd64 + arm64)" >> $GITHUB_STEP_SUMMARY
+          echo "| Tag | Description |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----|-------------|" >> $GITHUB_STEP_SUMMARY
+          echo "| \`${{ env.DOCKER_IMAGE }}:${{ steps.version.outputs.version }}-cpu\` | Full precision |" >> $GITHUB_STEP_SUMMARY
+          echo "| \`${{ env.DOCKER_IMAGE }}:${{ steps.version.outputs.version }}-cpu-quantized\` | Quantized |" >> $GITHUB_STEP_SUMMARY
+          echo "| \`${{ env.DOCKER_IMAGE }}:cpu\` | Full precision (latest) |" >> $GITHUB_STEP_SUMMARY
+          echo "| \`${{ env.DOCKER_IMAGE }}:slim\` | Quantized (latest) |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### GPU Images" >> $GITHUB_STEP_SUMMARY
-          echo "- \`${{ env.DOCKER_IMAGE }}:${{ steps.version.outputs.version }}-gpu\` (latest)" >> $GITHUB_STEP_SUMMARY
-          echo "- \`${{ env.DOCKER_IMAGE }}:latest-gpu\`" >> $GITHUB_STEP_SUMMARY
+          echo "### GPU Images (x64 only)" >> $GITHUB_STEP_SUMMARY
+          echo "| Tag | Description |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----|-------------|" >> $GITHUB_STEP_SUMMARY
+          echo "| \`${{ env.DOCKER_IMAGE }}:${{ steps.version.outputs.version }}-gpu\` | Full precision |" >> $GITHUB_STEP_SUMMARY
+          echo "| \`${{ env.DOCKER_IMAGE }}:${{ steps.version.outputs.version }}-gpu-quantized\` | Quantized |" >> $GITHUB_STEP_SUMMARY
+          echo "| \`${{ env.DOCKER_IMAGE }}:gpu\` | Full precision (latest) |" >> $GITHUB_STEP_SUMMARY
+          echo "| \`${{ env.DOCKER_IMAGE }}:latest\` | Full precision (latest) |" >> $GITHUB_STEP_SUMMARY
+          echo "| \`${{ env.DOCKER_IMAGE }}:quantized\` | Quantized (latest) |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Platform-Specific Tags" >> $GITHUB_STEP_SUMMARY
-          echo "Images are also tagged with platform and model variant:" >> $GITHUB_STEP_SUMMARY
-          echo "- \`${{ env.DOCKER_IMAGE }}:<version>-<platform>-<variant>-<cpu|gpu>\`" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Pull commands:" >> $GITHUB_STEP_SUMMARY
+          echo "### Quick Start" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
-          echo "# CPU (quantized, latest)" >> $GITHUB_STEP_SUMMARY
-          echo "docker pull ${{ env.DOCKER_IMAGE }}:latest-cpu" >> $GITHUB_STEP_SUMMARY
+          echo "# GPU (recommended if available)" >> $GITHUB_STEP_SUMMARY
+          echo "docker run -p 8080:8080 --gpus all ${{ env.DOCKER_IMAGE }}:latest" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "# GPU (quantized, latest)" >> $GITHUB_STEP_SUMMARY
-          echo "docker pull ${{ env.DOCKER_IMAGE }}:latest-gpu" >> $GITHUB_STEP_SUMMARY
+          echo "# CPU (multi-arch, full precision)" >> $GITHUB_STEP_SUMMARY
+          echo "docker run -p 8080:8080 ${{ env.DOCKER_IMAGE }}:cpu" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "# CPU (multi-arch, quantized/smaller)" >> $GITHUB_STEP_SUMMARY
+          echo "docker run -p 8080:8080 ${{ env.DOCKER_IMAGE }}:slim" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-
