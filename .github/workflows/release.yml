@@ -46,8 +46,14 @@ jobs:
         run: |
           # Build directly with docker (matching makefile approach but bypassing dependencies)
           # Use quantized models for build (models packaged separately)
-          # Build with CUDA features - binary will fall back to CPU if CUDA libraries unavailable
-          docker build --target runtime-cpu \
+          # For x64: Build to runtime-gpu to get CUDA provider libraries
+          # For ARM64: Build to runtime-cpu (CUDA not supported on ARM)
+          if [[ "${{ matrix.artifact }}" == "linux-x64" ]]; then
+            BUILD_TARGET="runtime-gpu"
+          else
+            BUILD_TARGET="runtime-cpu"
+          fi
+          docker build --target $BUILD_TARGET \
             --build-arg RUST_BUILD_FEATURES="--features cuda" \
             --build-arg TXT_MODEL_FILE=model_quantized.onnx \
             --build-arg IMG_MODEL_FILE=model_quantized.onnx \
@@ -61,6 +67,16 @@ jobs:
           docker cp temp-extract:/app/nomic-serve release/
           docker rm temp-extract
 
+      - name: Extract CUDA libraries (x64 only)
+        if: matrix.artifact == 'linux-x64'
+        run: |
+          docker create --name temp-extract-libs nomic-embed-v1-5:${{ matrix.artifact }}
+          mkdir -p cuda-libs
+          docker cp temp-extract-libs:/app/lib/. cuda-libs/ 2>/dev/null || true
+          docker rm temp-extract-libs
+          echo "CUDA provider libraries:"
+          ls -lh cuda-libs/ 2>/dev/null || echo "  (none found)"
+
       - name: Create binary tarball
         run: |
           cd release
@@ -68,11 +84,31 @@ jobs:
           mv nomic-serve nomic-embed-v1.5-${VERSION}-${{ matrix.artifact }}/
           tar -czvf ../nomic-embed-v1.5-${VERSION}-${{ matrix.artifact }}.tar.gz nomic-embed-v1.5-${VERSION}-${{ matrix.artifact }}
 
+      - name: Create CUDA libraries tarball (x64 only)
+        if: matrix.artifact == 'linux-x64'
+        run: |
+          if [ -d cuda-libs ] && [ "$(ls -A cuda-libs 2>/dev/null)" ]; then
+            mkdir -p nomic-embed-v1.5-${VERSION}-cuda-libs
+            mv cuda-libs/* nomic-embed-v1.5-${VERSION}-cuda-libs/
+            tar -czvf nomic-embed-v1.5-${VERSION}-cuda-libs.tar.gz nomic-embed-v1.5-${VERSION}-cuda-libs
+            echo "✓ CUDA libraries tarball created"
+          else
+            echo "⚠ No CUDA libraries found to package"
+          fi
+
       - name: Upload binary artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: nomic-embed-v1.5-*.tar.gz
+          path: nomic-embed-v1.5-${{ env.VERSION }}-${{ matrix.artifact }}.tar.gz
+
+      - name: Upload CUDA libraries artifact (x64 only)
+        if: matrix.artifact == 'linux-x64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: cuda-libs
+          path: nomic-embed-v1.5-${{ env.VERSION }}-cuda-libs.tar.gz
+          if-no-files-found: warn
 
   build-macos:
     runs-on: macos-latest
@@ -274,6 +310,29 @@ jobs:
             #           └── model_quantized.onnx (or model.onnx)
             ```
 
+            ### Step 4 (Optional): GPU Support
+
+            For GPU acceleration on Linux x64 with NVIDIA CUDA, download the CUDA libraries:
+
+            ```bash
+            # Download CUDA provider libraries (Linux x64 only, ~150MB)
+            tar -xzf nomic-embed-v1.5-${{ env.VERSION }}-cuda-libs.tar.gz
+
+            # Copy libraries into your installation
+            mkdir -p nomic-embed-v1.5-${{ env.VERSION }}-linux-x64/lib
+            cp nomic-embed-v1.5-${{ env.VERSION }}-cuda-libs/* nomic-embed-v1.5-${{ env.VERSION }}-linux-x64/lib/
+            ```
+
+            Then run with GPU enabled:
+
+            ```bash
+            cd nomic-embed-v1.5-${{ env.VERSION }}-linux-x64
+            export LD_LIBRARY_PATH=$PWD/lib:$LD_LIBRARY_PATH
+            USE_GPU=1 ./nomic-serve
+            ```
+
+            **Requirements:** NVIDIA GPU with CUDA 12.x and cuDNN 9.x installed.
+
             ## Running
 
             ```bash
@@ -304,7 +363,10 @@ jobs:
             - `TOKENIZER` - Path to tokenizer file (default: models/txt/tokenizer.json)
             - `IMG_MODEL` - Path to vision ONNX model (optional, auto-detects `model.onnx` or `model_quantized.onnx`)
             - `AVERAGING` - Averaging method for image color statistics: `arithmetic` or `geometric` (default: `geometric`)
+            - `USE_GPU` - Enable GPU acceleration (default: 0). Set to `1` to enable. Requires CUDA libraries.
 
-            **Model Variants:**
-            - **Quantized** (`models-quantized.tar.gz`): ~224MB total (text: 131MB, vision: 92MB, tokenizer: 696KB), faster inference, ~99% quality. Recommended for most use cases.
-            - **Full** (`models-full.tar.gz`): ~880MB total (text: 522MB, vision: 357MB, tokenizer: 696KB), best quality (fp32 precision). Use for maximum accuracy.
+            **Artifacts:**
+            - **Binary** (`linux-x64`, `linux-arm64`, `macos-arm64`): Platform-specific server binary (~15MB)
+            - **Quantized Models** (`models-quantized.tar.gz`): ~224MB total, faster inference, ~99% quality. Recommended.
+            - **Full Models** (`models-full.tar.gz`): ~880MB total, best quality (fp32 precision)
+            - **CUDA Libraries** (`cuda-libs.tar.gz`): ~150MB, required for GPU acceleration (Linux x64 only)

@@ -381,6 +381,11 @@ docker-run-gpu-full: docker-build-gpu-full
 		-e TXT_MAX_BATCH_SIZE=2056 -e IMG_MAX_BATCH_SIZE=256 \
 		$(DOCKER_IMAGE):$(DOCKER_TAG)-gpu-full
 
+remote-gpu-image:
+	docker run --rm -it --gpus all -p 8080:8080 \
+		-e TXT_MAX_BATCH_SIZE=2056 -e IMG_MAX_BATCH_SIZE=256 \
+		mindthemath/nomic-embed-v1.5:gpu
+
 # Push image
 docker-push: docker-push-cpu docker-push-gpu # Include GPU push
 

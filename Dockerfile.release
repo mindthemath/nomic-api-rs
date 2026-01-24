@@ -46,6 +46,25 @@ RUN set -eux && \
     chmod +x ./nomic-serve && \
     rm -rf nomic-embed-v1.5-* binary.tar.gz
 
+# Download CUDA provider libraries (x64 only, optional for GPU support)
+# These are packaged separately to keep CPU-only downloads small
+RUN set -eux && \
+    mkdir -p ./lib && \
+    if [ "$TARGETARCH" = "amd64" ]; then \
+        CUDA_LIBS_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/v${VERSION}/nomic-embed-v1.5-${VERSION}-cuda-libs.tar.gz" && \
+        echo "Downloading CUDA libraries from: $CUDA_LIBS_URL" && \
+        if curl -Lf -o cuda-libs.tar.gz "$CUDA_LIBS_URL" 2>/dev/null; then \
+            tar -xzf cuda-libs.tar.gz && \
+            mv nomic-embed-v1.5-*/lib/* ./lib/ 2>/dev/null || mv nomic-embed-v1.5-*/* ./lib/ 2>/dev/null || true && \
+            rm -rf nomic-embed-v1.5-* cuda-libs.tar.gz && \
+            echo "✓ CUDA libraries downloaded"; \
+        else \
+            echo "⚠ CUDA libraries not available (CPU-only mode)"; \
+        fi; \
+    else \
+        echo "Skipping CUDA libraries (not supported on $TARGETARCH)"; \
+    fi
+
 # Download models tarball
 RUN set -eux && \
     if [ -z "$VERSION" ]; then \
@@ -97,6 +116,11 @@ WORKDIR /app
 COPY --from=downloader /downloads/nomic-serve ./
 COPY --from=downloader /downloads/models ./models
 
+# Copy ONNX Runtime CUDA provider libraries (required for GPU execution)
+# These libraries enable the CUDA execution provider in ONNX Runtime
+# Note: lib directory is created in downloader stage even if empty
+COPY --from=downloader /downloads/lib ./lib
+
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y \
     ca-certificates \
@@ -108,7 +132,8 @@ RUN apt-get update && apt-get install -y \
 ENV PORT=8080
 ENV TOKENIZER=models/txt/tokenizer.json
 ENV USE_GPU=1
-ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64:/usr/local/cuda/targets/x86_64-linux/lib:${LD_LIBRARY_PATH}
+# Include ONNX Runtime providers in LD_LIBRARY_PATH (before CUDA libs)
+ENV LD_LIBRARY_PATH=/app/lib:/usr/local/cuda/lib64:/usr/local/cuda/targets/x86_64-linux/lib:${LD_LIBRARY_PATH}
 ENV ORT_LOG_LEVEL=1
 ENV ORT_LOG_SEVERITY_LEVEL=1
 

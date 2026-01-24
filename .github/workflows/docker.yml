@@ -1,9 +1,11 @@
 name: Build and Push Docker Images
 
 on:
-  push:
-    tags:
-      - "v202*" # Trigger on version tags
+  # Trigger after Release Artifacts workflow completes successfully
+  workflow_run:
+    workflows: ["Release Artifacts"]
+    types:
+      - completed
   workflow_dispatch:
     inputs:
       version:
@@ -15,6 +17,10 @@ env:
 
 jobs:
   build-cpu:
+    # Only run if triggered manually OR if the release workflow succeeded
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
     strategy:
       matrix:
         include:
@@ -56,8 +62,14 @@ jobs:
               exit 1
             fi
             echo "version=${VERSION}" >> $GITHUB_OUTPUT
-          elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
-            VERSION=${GITHUB_REF#refs/tags/v}
+          elif [[ "${{ github.event_name }}" == "workflow_run" ]]; then
+            # Get version from the tag that triggered the release workflow
+            TAG="${{ github.event.workflow_run.head_branch }}"
+            VERSION=${TAG#v}
+            if [ -z "$VERSION" ]; then
+              echo "ERROR: Could not extract version from tag: $TAG"
+              exit 1
+            fi
             echo "version=${VERSION}" >> $GITHUB_OUTPUT
           else
             echo "ERROR: Version must be specified"
@@ -83,6 +95,10 @@ jobs:
           cache-to: type=gha,mode=max,scope=cpu-${{ matrix.variant }}
 
   build-gpu:
+    # Only run if triggered manually OR if the release workflow succeeded
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
     strategy:
       matrix:
         include:
@@ -124,8 +140,14 @@ jobs:
               exit 1
             fi
             echo "version=${VERSION}" >> $GITHUB_OUTPUT
-          elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
-            VERSION=${GITHUB_REF#refs/tags/v}
+          elif [[ "${{ github.event_name }}" == "workflow_run" ]]; then
+            # Get version from the tag that triggered the release workflow
+            TAG="${{ github.event.workflow_run.head_branch }}"
+            VERSION=${TAG#v}
+            if [ -z "$VERSION" ]; then
+              echo "ERROR: Could not extract version from tag: $TAG"
+              exit 1
+            fi
             echo "version=${VERSION}" >> $GITHUB_OUTPUT
           else
             echo "ERROR: Version must be specified"
@@ -163,6 +185,8 @@ jobs:
 
   summary:
     needs: [build-cpu, build-gpu]
+    # Only run if build jobs succeeded
+    if: always() && needs.build-cpu.result == 'success' && needs.build-gpu.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - name: Extract version
@@ -170,6 +194,9 @@ jobs:
         run: |
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.event_name }}" == "workflow_run" ]]; then
+            TAG="${{ github.event.workflow_run.head_branch }}"
+            echo "version=${TAG#v}" >> $GITHUB_OUTPUT
           else
             echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
           fi
