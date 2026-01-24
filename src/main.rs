@@ -98,34 +98,6 @@ fn resolve_model_path<P: AsRef<Path>>(relative: P) -> PathBuf {
     relative.to_path_buf()
 }
 
-/// Resolve model path with smart fallback: try full precision first, then quantized.
-/// If env var is set, use that explicitly. Otherwise, try model.onnx, then model_quantized.onnx.
-fn resolve_model_path_with_fallback(
-    env_var: &str,
-    default_dir: &str,
-    default_filename: &str,
-) -> PathBuf {
-    // If explicit env var is set, use it
-    if let Ok(explicit_path) = std::env::var(env_var) {
-        return resolve_model_path(explicit_path);
-    }
-
-    // Try full precision model first
-    let full_path = resolve_model_path(format!("{}/model.onnx", default_dir));
-    if full_path.exists() {
-        return full_path;
-    }
-
-    // Fall back to quantized model
-    let quantized_path = resolve_model_path(format!("{}/model_quantized.onnx", default_dir));
-    if quantized_path.exists() {
-        return quantized_path;
-    }
-
-    // Neither exists, return default (will fail later with proper error)
-    resolve_model_path(format!("{}/{}", default_dir, default_filename))
-}
-
 /// Image preprocessing constants (CLIP-style, from preprocessor_config.json)
 const IMAGE_SIZE: usize = 224;
 const IMAGE_MEAN: [f32; 3] = [0.48145466, 0.4578275, 0.40821073];
@@ -241,7 +213,7 @@ impl AppState {
     }
 
     /// Lazy-load and initialize the text model if not already done
-    async fn get_text_state(&self) -> Result<Arc<TextState>, Error> {
+    async fn get_text_state(&self) -> Result<&TextState, Error> {
         self.text
             .get_or_try_init(|| async {
                 // Ensure model and tokenizer exist (download if needed)
@@ -337,6 +309,8 @@ impl AppState {
 
 /// Create a session builder with requested execution providers
 fn create_session_builder(use_gpu: bool) -> Result<SessionBuilder, Error> {
+    #[allow(unused_variables)]
+    let _use_gpu = use_gpu;
     #[cfg(feature = "cuda")]
     let mut builder = SessionBuilder::new()
         .map_err(|e| Error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
