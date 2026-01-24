@@ -52,105 +52,220 @@ RUN mkdir -p /build/app/lib && \
 
 
 # ============================================================================
+
+
 # Stage 2: CPU Runtime
+
+
 # ============================================================================
+
+
 FROM debian:bookworm-slim AS runtime-cpu
 
+
+
+
+
 # Install runtime dependencies (only standard C libraries)
+
+
 # dumb-init handles signals properly (SIGTERM, SIGINT) for graceful shutdown
+
+
 RUN apt-get update && apt-get install -y \
+
+
     ca-certificates \
+
+
     libssl3 \
+
+
     dumb-init \
+
+
     && rm -rf /var/lib/apt/lists/*
+
+
+
+
 
 WORKDIR /app
 
+
+
+
+
 # Copy binary from builder
+
+
 COPY --from=builder /build/target/release/nomic-serve ./
 
-# Build arguments for model selection
-# Default to quantized models for smaller image size
-ARG TXT_MODEL_FILE=model_quantized.onnx
-ARG IMG_MODEL_FILE=model_quantized.onnx
 
-# Copy text model files (using build arg)
-COPY models/txt/${TXT_MODEL_FILE} models/txt/tokenizer.json models/txt/
 
-# Copy vision model files (using build arg)
-COPY models/img/${IMG_MODEL_FILE} models/img/
+
+
+# Ensure models directory exists and is writable for on-demand downloads
+
+
+RUN mkdir -p /app/models && chmod 777 /app/models
+
+
+
+
 
 # Default configuration - full multimodal
-# CORS: Set CORS_ORIGINS="https://example.com,https://app.example.com" to customize
-#       Set DISABLE_CORS=1 to allow all origins
+
+
 ENV PORT=8080
+
+
 ENV TOKENIZER=models/txt/tokenizer.json
-# Set model paths from build args
-# Note: We need to construct the full path here since ENV can reference ARG
-ENV TXT_MODEL=models/txt/${TXT_MODEL_FILE}
-ENV IMG_MODEL=models/img/${IMG_MODEL_FILE}
+
+
+
+
 
 EXPOSE 8080
 
+
+
+
+
 # Use dumb-init to handle signals properly (Ctrl-C, docker stop, etc.)
+
+
 ENTRYPOINT ["dumb-init", "--"]
+
+
 CMD ["./nomic-serve"]
 
 
+
+
+
+
+
+
 # ============================================================================
+
+
 # Stage 3: GPU Runtime (CUDA)
+
+
 # ============================================================================
+
+
 # Use CUDA 12.3.2 with cuDNN 9 to match ONNX Runtime 2.0.0-rc.10 requirements
-# CUDA 12.1.0 is deprecated, so we use 12.3.2 which has cuDNN 9 and is not deprecated
+
+
 FROM nvidia/cuda:12.3.2-cudnn9-runtime-ubuntu22.04 AS runtime-gpu
 
+
+
+
+
 # Install runtime dependencies
+
+
 # dumb-init handles signals properly (SIGTERM, SIGINT) for graceful shutdown
+
+
 RUN apt-get update && apt-get install -y \
+
+
     ca-certificates \
+
+
     libssl3 \
+
+
     dumb-init \
+
+
     && rm -rf /var/lib/apt/lists/*
+
+
+
+
 
 WORKDIR /app
 
+
+
+
+
 # Copy binary from builder
+
+
 COPY --from=builder /build/target/release/nomic-serve ./
 
+
+
+
+
 # Copy ONNX Runtime CUDA providers libraries (if available)
-# These are needed for GPU mode; if not found, server falls back to CPU automatically
-# The directory always exists (created in builder stage) so COPY won't fail
+
+
 COPY --from=builder /build/app/lib/ /app/lib/
 
-# Build arguments for model selection
-# Default to quantized models for smaller image size
-ARG TXT_MODEL_FILE=model_quantized.onnx
-ARG IMG_MODEL_FILE=model_quantized.onnx
 
-# Copy text model files (using build arg)
-COPY models/txt/${TXT_MODEL_FILE} models/txt/tokenizer.json models/txt/
 
-# Copy vision model files (using build arg)
-COPY models/img/${IMG_MODEL_FILE} models/img/
+
+
+# Ensure models directory exists and is writable for on-demand downloads
+
+
+RUN mkdir -p /app/models && chmod 777 /app/models
+
+
+
+
 
 # GPU mode enabled by default
+
+
 # Set LD_LIBRARY_PATH to find ONNX Runtime providers
-# CORS: Set CORS_ORIGINS="https://example.com,https://app.example.com" to customize
-#       Set DISABLE_CORS=1 to allow all origins
+
+
 ENV PORT=8080
+
+
 ENV TOKENIZER=models/txt/tokenizer.json
-# Set model paths from build args
-ENV TXT_MODEL=models/txt/${TXT_MODEL_FILE}
-ENV IMG_MODEL=models/img/${IMG_MODEL_FILE}
+
+
 ENV USE_GPU=1
+
+
 # Include CUDA libraries (including cuDNN) in LD_LIBRARY_PATH
+
+
 ENV LD_LIBRARY_PATH=/app/lib:/usr/local/cuda/lib64:/usr/local/cuda/targets/x86_64-linux/lib:${LD_LIBRARY_PATH}
-# Enable ONNX Runtime verbose logging to see which execution provider is used
+
+
+# Enable ONNX Runtime verbose logging
+
+
 ENV ORT_LOG_LEVEL=1
+
+
 ENV ORT_LOG_SEVERITY_LEVEL=1
+
+
+
+
 
 EXPOSE 8080
 
+
+
+
+
 # Use dumb-init to handle signals properly (Ctrl-C, docker stop, etc.)
+
+
 ENTRYPOINT ["dumb-init", "--"]
+
+
 CMD ["./nomic-serve"]
+
