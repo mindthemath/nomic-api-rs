@@ -4,17 +4,14 @@
 # Build arguments
 ARG GITHUB_REPOSITORY=mindthemath/nomic-api-rs
 ARG VERSION
-ARG MODEL_VARIANT=quantized
 
 # ============================================================================
 # Stage 1: Download and extract artifacts
 # ============================================================================
-# Use same base as runtime for consistency and smaller image size
 FROM debian:trixie-20260112-slim AS downloader
 
 ARG GITHUB_REPOSITORY
 ARG VERSION
-ARG MODEL_VARIANT
 ARG TARGETARCH
 
 # Install dependencies for downloading and extracting
@@ -47,7 +44,6 @@ RUN set -eux && \
     rm -rf nomic-embed-v1.5-* binary.tar.gz
 
 # Download CUDA provider libraries (x64 only, optional for GPU support)
-# These are packaged separately to keep CPU-only downloads small
 RUN set -eux && \
     mkdir -p ./lib && \
     if [ "$TARGETARCH" = "amd64" ]; then \
@@ -65,19 +61,6 @@ RUN set -eux && \
         echo "Skipping CUDA libraries (not supported on $TARGETARCH)"; \
     fi
 
-# Download models tarball
-RUN set -eux && \
-    if [ -z "$VERSION" ]; then \
-        echo "ERROR: VERSION build arg is required"; \
-        exit 1; \
-    fi && \
-    RELEASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/v${VERSION}/nomic-embed-v1.5-${VERSION}-models-${MODEL_VARIANT}.tar.gz" && \
-    echo "Downloading models v${VERSION} (${MODEL_VARIANT}) from: $RELEASE_URL" && \
-    curl -Lf -o models.tar.gz "$RELEASE_URL" || { echo "Failed to download models from $RELEASE_URL"; exit 1; } && \
-    tar -xzf models.tar.gz && \
-    mv nomic-embed-v1.5-*/models ./models && \
-    rm -rf nomic-embed-v1.5-* models.tar.gz
-
 # ============================================================================
 # Stage 2: CPU Runtime
 # ============================================================================
@@ -85,9 +68,8 @@ FROM debian:trixie-20260112-slim AS runtime-cpu
 
 WORKDIR /app
 
-# Copy binary and models from downloader stage
+# Copy binary from downloader stage
 COPY --from=downloader /downloads/nomic-serve ./
-COPY --from=downloader /downloads/models ./models
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y \
@@ -99,6 +81,9 @@ RUN apt-get update && apt-get install -y \
 # Default configuration
 ENV PORT=8080
 ENV TOKENIZER=models/txt/tokenizer.json
+
+# Ensure models directory exists and is writable
+RUN mkdir -p /app/models && chmod 777 /app/models
 
 EXPOSE 8080
 
@@ -112,13 +97,10 @@ FROM nvidia/cuda:12.3.2-cudnn9-runtime-ubuntu22.04 AS runtime-gpu
 
 WORKDIR /app
 
-# Copy binary and models from downloader stage
+# Copy binary from downloader stage
 COPY --from=downloader /downloads/nomic-serve ./
-COPY --from=downloader /downloads/models ./models
 
-# Copy ONNX Runtime CUDA provider libraries (required for GPU execution)
-# These libraries enable the CUDA execution provider in ONNX Runtime
-# Note: lib directory is created in downloader stage even if empty
+# Copy ONNX Runtime CUDA provider libraries
 COPY --from=downloader /downloads/lib ./lib
 
 # Install runtime dependencies
@@ -132,12 +114,15 @@ RUN apt-get update && apt-get install -y \
 ENV PORT=8080
 ENV TOKENIZER=models/txt/tokenizer.json
 ENV USE_GPU=1
-# Include ONNX Runtime providers in LD_LIBRARY_PATH (before CUDA libs)
 ENV LD_LIBRARY_PATH=/app/lib:/usr/local/cuda/lib64:/usr/local/cuda/targets/x86_64-linux/lib:${LD_LIBRARY_PATH}
 ENV ORT_LOG_LEVEL=1
 ENV ORT_LOG_SEVERITY_LEVEL=1
+
+# Ensure models directory exists and is writable
+RUN mkdir -p /app/models && chmod 777 /app/models
 
 EXPOSE 8080
 
 ENTRYPOINT ["dumb-init", "--"]
 CMD ["./nomic-serve"]
+

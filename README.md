@@ -50,16 +50,21 @@ Returns server information including model paths and configuration.
 }
 ```
 
-### `POST /embed` (or `/txt/embed`)
+### `POST /txt/embed` (alias `/embed`)
 Generate embedding for a single text.
 
 **Request:**
 ```json
-{"input": "Hello world", "dim": 768}
+{
+  "input": "Hello world",
+  "dim": 768,
+  "prefix": "search_query"
+}
 ```
 
 - `input` (required): Text to embed
-- `dim` (optional): Embedding dimension (1-768). Defaults to 768. Supports [Matryoshka embeddings](https://huggingface.co/blog/matryoshka) - use smaller dimensions for faster similarity search.
+- `dim` (optional): Embedding dimension (1-768). Defaults to 768. Supports [Matryoshka embeddings](https://huggingface.co/blog/matryoshka).
+- `prefix` (optional): Task prefix. Defaults to `search_query`. Options: `search_query`, `search_document`, `classification`, `clustering`.
 
 **Response:**
 ```json
@@ -70,31 +75,42 @@ Generate embedding for a single text.
 }
 ```
 
-**Example with reduced dimension:**
-```json
-{"input": "Hello world", "dim": 128}
-```
-Returns a 128-dimensional embedding (faster similarity search, slightly lower quality).
+### `POST /txt/query` (alias `/query`)
+Convenience endpoint for search queries. Automatically forces `prefix="search_query"`.
 
-### `POST /batch` (or `/txt/batch`)
+**Request:**
+```json
+{"input": "What is ONNX?", "dim": 768}
+```
+
+### `POST /txt/batch` (alias `/batch`)
 Generate embeddings for multiple texts.
 
 **Request:**
 ```json
-{"inputs": ["Hello world", "Goodbye world"], "dim": 8}
+{
+  "inputs": ["Hello world", "Goodbye world"],
+  "dim": 768,
+  "prefix": "search_document"
+}
 ```
 
 - `inputs` (required): List of texts to embed
-- `dim` (optional): Embedding dimension (1-768). Defaults to 768. Applied to all embeddings in the batch.
+- `dim` (optional): Embedding dimension.
+- `prefix` (optional): Task prefix. Defaults to `search_query` (note: for indexing documents, you should specify `search_document`).
 
 **Response:**
 ```json
 {
-  "embeddings": [[0.123, 0.456, ...], [0.789, -0.123, ...]],
+  "embeddings": [[0.123, ...], [0.789, ...]],
   "tokens": [4, 5],
   "time_ms": 45.67
 }
 ```
+
+**Note on Batching:**
+- **Quantized Model (default)**: Batch size **must be 1**. Requests with multiple inputs will fail with `400 Bad Request` to prevent accuracy degradation (see "Why Sequential Processing" below).
+- **FP32 Model**: Supports batching multiple inputs.
 
 ### `POST /img/embed`
 Generate embedding for a single image.
@@ -102,12 +118,12 @@ Generate embedding for a single image.
 **Request:**
 ```json
 {
-  "content": "https://example.com/image.jpg",
+  "input": "https://example.com/image.jpg",
   "dim": 768
 }
 ```
 
-- `content` (required): Image as URL, data URL (`data:image/jpeg;base64,...`), or raw base64
+- `input` (required): Image as URL, data URL (`data:image/jpeg;base64,...`), or raw base64. Alias: `content`.
 - `dim` (optional): Embedding dimension (1-768). Defaults to 768.
 
 **Response:**
@@ -126,13 +142,16 @@ Generate embeddings for multiple images.
 **Request:**
 ```json
 {
-  "contents": [
+  "inputs": [
     "https://example.com/cat.jpg",
     "data:image/png;base64,iVBORw0KGgo..."
   ],
   "dim": 768
 }
 ```
+
+- `inputs` (required): List of image inputs (URLs or base64). Aliases: `contents`, `input`.
+- `dim` (optional): Embedding dimension.
 
 **Response:**
 ```json
@@ -192,14 +211,66 @@ OpenAPI 3.1.0 schema.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PORT` | `8080` | Server port |
-| `MODEL` | `models/txt/model_quantized.onnx` | Path to text ONNX model (fallback for `TXT_MODEL`) |
-| `TXT_MODEL` | `models/txt/model_quantized.onnx` | Path to text ONNX model |
-| `TOKENIZER` | `models/txt/tokenizer.json` | Path to tokenizer |
-| `IMG_MODEL` | `models/img/model_quantized.onnx` | Path to vision ONNX model |
+| `TXT_MODEL` | `model_quantized.onnx` | Model filename or path. If missing locally, downloads from HuggingFace. |
+| `TOKENIZER` | `tokenizer.json` | Tokenizer filename or path. |
+| `IMG_MODEL` | `model_quantized.onnx` | Vision model filename or path. If missing locally, downloads from HuggingFace. |
 | `USE_GPU` | `false` | Enable GPU inference (`1` or `true`) |
 | `AVERAGING` | `geometric` | Default averaging method for image color statistics: `arithmetic` or `geometric` |
 | `DISABLE_CORS` | `false` | Disable CORS entirely (`1` or `true`) |
 | `CORS_ORIGINS` | *(see below)* | Comma-separated list of allowed origins |
+| `MAX_BODY_SIZE_MB` | `100` | Maximum request body size in MB |
+| `TXT_MAX_BATCH_SIZE` | `16` | Max batch size for text (FP32 only; quantized is always 1) |
+| `IMG_MAX_BATCH_SIZE` | `4` | Max batch size for images |
+
+💡 **Lazy Loading**: Models are downloaded on-demand. If you only use text endpoints, the vision model (~100MB+) will never be downloaded.
+
+### Docker
+
+Unified Docker images that download models on-demand.
+
+#### Available Images
+
+| Tag | Architecture | Description |
+|-----|--------------|-------------|
+| `mindthemath/nomic-embed-v1.5:latest` | `amd64` | GPU enabled (CUDA), recommended for x86_64 |
+| `mindthemath/nomic-embed-v1.5:gpu` | `amd64` | GPU enabled (CUDA) |
+| `mindthemath/nomic-embed-v1.5:cpu` | `amd64`, `arm64` | Multi-arch, CPU only |
+| `mindthemath/nomic-embed-v1.5:slim` | `amd64`, `arm64` | Alias for CPU |
+
+#### Usage
+
+It is highly recommended to mount a volume to `/app/models` to persist downloaded models across container restarts.
+
+```bash
+# GPU (Recommended for amd64)
+docker run -p 8080:8080 --gpus all \
+  -v nomic-models:/app/models \
+  mindthemath/nomic-embed-v1.5:latest
+
+# CPU (Multi-arch)
+docker run -p 8080:8080 \
+  -v nomic-models:/app/models \
+  mindthemath/nomic-embed-v1.5:cpu
+```
+
+**Customizing Models:**
+You can specify which model variant to download via environment variables:
+
+```bash
+# Use full-precision (FP32) text model instead of quantized
+docker run -p 8080:8080 \
+  -e TXT_MODEL=model.onnx \
+  -v nomic-models:/app/models \
+  mindthemath/nomic-embed-v1.5:cpu
+```
+
+**DNS Configuration:** If you are using image URLs (`/img/embed`, `/img/batch`), add `--dns 1.1.1.1` to ensure fast DNS resolution.
+
+#### Image Sizes (Approximate)
+- **CPU (Binary only)**: ~80MB
+- **GPU (Binary + CUDA providers)**: ~250MB (plus base CUDA runtime layers)
+
+**GitHub Actions**: Automatically builds and pushes images on tag releases.
 
 ### CORS Configuration
 
@@ -322,21 +393,21 @@ This could cause:
 - Non-reproducible experiments
 - Subtle bugs that are hard to diagnose
 
-### Sequential Processing is Correct (for Quantized Model)
+### Sequential Processing Enforced (for Quantized Model)
 
-By processing each text individually (batch_size=1) with the quantized model, we guarantee:
-- **Deterministic results**: Same text → same embedding, always
-- **No cross-sample interference**: Each text processed in isolation
-- **Correctness over speed**: Throughput is lower, but results are reliable
+To guarantee correctness, the server **enforces** sequential processing for the quantized text model:
+- **Batch size limit**: The `/txt/batch` endpoint will return `400 Bad Request` if `inputs` contains more than 1 item when using the quantized model.
+- **Deterministic results**: Same text → same embedding, always.
+- **Correctness over speed**: We prioritize reliable embeddings over potentially broken batched inference.
 
 ### Alternative: Use FP32 Model for Batching
 
 If you need batching for text embeddings:
-- **Use FP32 model** (`model.onnx` instead of `model_quantized.onnx`)
+- **Use FP32 model** (ensure `models/txt/model.onnx` exists)
 - **FP32 batches perfectly** (0.000000 difference, cosine similarity = 1.0)
-- **Trade-off**: Larger model size (~375MB vs ~131MB) but enables batching
+- **Trade-off**: Larger model size (~375MB vs ~131MB) but enables batching (up to `TXT_MAX_BATCH_SIZE`).
 
-**Current implementation**: Uses quantized model by default, so sequential processing is required.
+**Current implementation**: Uses quantized model by default if FP32 is not found, so sequential processing is enforced.
 
 ---
 
@@ -415,56 +486,54 @@ Total: ~263MB
 
 ### Docker
 
-Multi-stage Dockerfile included. Build and push images:
+Multi-stage Dockerfile included for building optimized images. Official images are published to DockerHub.
+
+#### Available Images
+
+| Tag | Architecture | Variant | Description |
+|-----|--------------|---------|-------------|
+| `mindthemath/nomic-embed-v1.5:latest` | `amd64` | Full | Best quality, GPU enabled (CUDA) |
+| `mindthemath/nomic-embed-v1.5:gpu` | `amd64` | Full | Best quality, GPU enabled (CUDA) |
+| `mindthemath/nomic-embed-v1.5:quantized` | `amd64` | Quantized | Faster, smaller, GPU enabled (CUDA) |
+| `mindthemath/nomic-embed-v1.5:cpu` | `amd64`, `arm64` | Full | Multi-arch, best quality, CPU only |
+| `mindthemath/nomic-embed-v1.5:slim` | `amd64`, `arm64` | Quantized | Multi-arch, smaller, CPU only |
+
+**Note on GPU Images:** GPU images are significantly larger (~2.7GB) due to the CUDA runtime and are only available for `amd64` (x86_64).
+
+#### Usage
 
 ```bash
-# Build both CPU and GPU images
-make docker-build
+# GPU (Recommended for amd64)
+docker run -p 8080:8080 --gpus all mindthemath/nomic-embed-v1.5:latest
 
-# Build specific image
-make docker-build-cpu   # CPU-only (debian:bookworm-slim)
-make docker-build-gpu   # GPU/CUDA (nvidia/cuda:12.1.0-runtime)
+# CPU (Multi-arch, Best Quality)
+docker run -p 8080:8080 mindthemath/nomic-embed-v1.5:cpu
 
-# Push to DockerHub (requires docker login)
-make docker-push
+# CPU (Multi-arch, Smallest/Fastest)
+docker run -p 8080:8080 mindthemath/nomic-embed-v1.5:slim
 ```
 
-**Images:**
-- `mindthemath/nomic-text-v1.5-rs:latest-cpu` - CPU-only deployment
-- `mindthemath/nomic-text-v1.5-rs:latest-gpu` - GPU/CUDA deployment
+**DNS Configuration:** It is recommended to add `--dns 1.1.1.1` to the `docker run` command if you are using image URLs (`/img/embed`, `/img/batch`) to ensure fast DNS resolution within the container.
 
-**Usage:**
+#### Image Sizes (Approximate)
+- **CPU (Full)**: ~760MB
+- **CPU (Quantized/Slim)**: ~360MB
+- **GPU (Full)**: ~2.7GB
+- **GPU (Quantized)**: ~2.3GB
+
+**GitHub Actions**: Automatically builds and pushes images on tag releases (e.g., `v20260118`).
+
+### Local Build
+
+If you wish to build images locally:
+
 ```bash
-# CPU
-docker run -p 8080:8080 --dns 1.1.1.1 --dns 1.0.0.1 mindthemath/nomic-text-v1.5-rs:latest-cpu
+# Build CPU image
+docker build -t nomic-embed-v1.5:local --target runtime-cpu .
 
-# GPU (requires nvidia-docker)
-docker run --gpus all -p 8080:8080 --dns 1.1.1.1 --dns 1.0.0.1 mindthemath/nomic-text-v1.5-rs:latest-gpu
+# Build GPU image (requires NVIDIA Docker)
+docker build -t nomic-embed-v1.5:local-gpu --target runtime-gpu .
 ```
-
-**Note**: The `--dns` flags are recommended for image embedding endpoints (`/img/embed`, `/img/batch`) to ensure fast DNS resolution. Cloudflare DNS (1.1.1.1) is used for privacy and performance. Without DNS configuration, image URL fetching may be slow (10+ seconds) due to Docker's default DNS configuration.
-
-**Image Size** (as shown by `docker images`):
-- **CPU image**: ~358MB
-  - Binary: 38MB
-  - Text model files (`model_quantized.onnx` + `tokenizer.json`): 132MB
-  - Vision model (`model_quantized.onnx`): 93MB
-  - Base image (`debian:bookworm-slim`): 74.8MB
-  - Runtime dependencies (ca-certificates, libssl3, dumb-init): 9.2MB
-  - Layer compression overhead: ~12MB
-- **GPU image**: ~2.7GB
-  - Binary: 38MB
-  - Text model files (`model_quantized.onnx` + `tokenizer.json`): 132MB
-  - Vision model (`model_quantized.onnx`): 93MB
-  - ONNX Runtime CUDA providers libraries: 196MB
-  - CUDA runtime base image (`nvidia/cuda:12.1.0-runtime-ubuntu22.04`): 2.23GB
-  - Runtime dependencies: 8MB
-  - Layer compression overhead: ~100MB
-  - Note: The `-runtime` variant is required (not `-base`) as it includes CUDA runtime libraries needed by ONNX Runtime's CUDA execution provider. The ONNX Runtime CUDA providers add significant size but are required for GPU inference.
-
-**Note**: The CPU Docker image includes both text and vision models for full multimodal support. The GPU image is significantly larger due to the CUDA runtime base image (~2.23GB) required for GPU inference.
-
-**GitHub Actions**: Automatically builds and pushes images on tag releases (e.g., `v1.0.0`).
 
 ### Systemd
 

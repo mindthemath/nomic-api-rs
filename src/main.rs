@@ -51,6 +51,7 @@ use std::{
     sync::{Arc, Mutex},
     time::Instant,
 };
+use tokio::sync::OnceCell;
 use tokenizers::Tokenizer;
 use tower_http::{
     cors::{AllowOrigin, CorsLayer},
@@ -203,232 +204,245 @@ pub struct VisionState {
 /// Combined application state
 #[derive(Clone)]
 pub struct AppState {
-    text: Option<Arc<TextState>>,
-    vision: Option<Arc<VisionState>>,
+    text: Arc<OnceCell<TextState>>,
+    vision: Arc<OnceCell<VisionState>>,
     default_avg_method: image_stats::AveragingMethod,
-    txt_model_path: Option<PathBuf>,
-    tokenizer_path: Option<PathBuf>,
-    img_model_path: Option<PathBuf>,
+    txt_model_path: PathBuf,
+    tokenizer_path: PathBuf,
+    img_model_path: PathBuf,
     gpu_enabled: bool,
+    use_gpu_requested: bool,
 }
 
 impl AppState {
     #[allow(unused_variables)]
     async fn new(
-        txt_model: Option<PathBuf>,
-        tokenizer: Option<PathBuf>,
-        img_model: Option<PathBuf>,
+        txt_model_path: PathBuf,
+        tokenizer_path: PathBuf,
+        img_model_path: PathBuf,
         default_avg_method: image_stats::AveragingMethod,
         use_gpu: bool,
     ) -> anyhow::Result<Self> {
-        let cold_start = Instant::now();
-
-        // Clone paths for storing in state
-        let txt_model_path = txt_model.clone();
-        let tokenizer_path = tokenizer.clone();
-        let img_model_path = img_model.clone();
-
         #[cfg(feature = "cuda")]
         let gpu_enabled = use_gpu;
         #[cfg(not(feature = "cuda"))]
         let gpu_enabled = false;
 
-        // Verify CUDA is available if requested
-        #[cfg(feature = "cuda")]
-        if use_gpu {
-            // Check if CUDA libraries are available
-            if std::env::var("LD_LIBRARY_PATH").is_ok() {
-                info!("LD_LIBRARY_PATH is set, CUDA libraries should be available");
-            }
-            // Try to verify CUDA is accessible
-            if let Ok(cuda_path) = std::env::var("CUDA_PATH") {
-                info!("CUDA_PATH: {}", cuda_path);
-            }
-        }
-
-        let session_builder_factory = || -> anyhow::Result<SessionBuilder> {
-            #[cfg(feature = "cuda")]
-            let mut builder = SessionBuilder::new()
-                .map_err(|e| anyhow::anyhow!("Failed to create session builder: {}", e))?
-                .with_optimization_level(GraphOptimizationLevel::Level3)
-                .map_err(|e| anyhow::anyhow!("Failed to set optimization level: {}", e))?;
-
-            #[cfg(not(feature = "cuda"))]
-            let builder = SessionBuilder::new()
-                .map_err(|e| anyhow::anyhow!("Failed to create session builder: {}", e))?
-                .with_optimization_level(GraphOptimizationLevel::Level3)
-                .map_err(|e| anyhow::anyhow!("Failed to set optimization level: {}", e))?;
-
-            #[cfg(feature = "cuda")]
-            if use_gpu {
-                // Use CUDA provider first, with CPU as fallback
-                // ONNX Runtime will use GPU for supported operations and fall back to CPU for unsupported ones
-                let cuda_provider: ExecutionProviderDispatch =
-                    CUDAExecutionProvider::default().into();
-                let cpu_provider: ExecutionProviderDispatch =
-                    CPUExecutionProvider::default().into();
-                // Set both providers - CUDA first (higher priority), CPU as fallback
-                builder = builder.with_execution_providers([cuda_provider, cpu_provider])
-                    .map_err(|e| {
-                        warn!("Failed to initialize CUDA execution provider: {}. This may indicate CUDA is not available.", e);
-                        anyhow::anyhow!("CUDA execution provider failed: {}", e)
-                    })?;
-                info!("CUDA execution provider initialized successfully (with CPU fallback).");
-            } else {
-                info!("GPU not requested (USE_GPU environment variable not '1'). Using CPU.");
-                let cpu_provider: ExecutionProviderDispatch =
-                    CPUExecutionProvider::default().into();
-                builder = builder
-                    .with_execution_providers([cpu_provider])
-                    .map_err(|e| anyhow::anyhow!("Failed to set CPU execution provider: {}", e))?;
-            }
-            #[cfg(not(feature = "cuda"))]
-            {
-                info!("CUDA feature not enabled. Using CPU (default).");
-            }
-
-            Ok(builder)
-        };
-
-        // Parse max batch sizes from environment (default: text=16, image=4)
-        let txt_max_batch_size = std::env::var("TXT_MAX_BATCH_SIZE")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(16);
-
-        let img_max_batch_size = std::env::var("IMG_MAX_BATCH_SIZE")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(4);
-
-        // Load text model if paths provided
-        let text = if let (Some(model_path), Some(tok_path)) = (txt_model, tokenizer) {
-            let variant = ModelVariant::from_path(&model_path);
-            info!(
-                "Loading text model: {:?} (variant: {:?})",
-                model_path, variant
-            );
-
-            let model_bytes = std::fs::read(&model_path)
-                .map_err(|e| anyhow::anyhow!("Failed to read model file: {}", e))?;
-
-            let builder = session_builder_factory()?;
-            let session = builder
-                .commit_from_memory(&model_bytes)
-                .map_err(|e| anyhow::anyhow!("Failed to load model: {}", e))?;
-
-            // Log execution providers (for debugging)
-            #[cfg(feature = "cuda")]
-            if use_gpu {
-                // Try to verify CUDA is actually available by checking if we can access GPU
-                if let Ok(_) = std::process::Command::new("nvidia-smi")
-                    .arg("--query-gpu=name")
-                    .arg("--format=csv,noheader")
-                    .output()
-                {
-                    info!("CUDA GPU detected via nvidia-smi");
-                } else {
-                    warn!("nvidia-smi not available - CUDA may not be working");
-                }
-                info!("Text model loaded with CUDA provider configured.");
-                info!("If GPU is not used, ONNX Runtime may be falling back to CPU silently.");
-            }
-
-            let tokenizer = Tokenizer::from_file(&tok_path).map_err(|e| anyhow::anyhow!(e))?;
-
-            // For quantized text models, enforce batch_size=1
-            let effective_max_batch = if variant == ModelVariant::Quantized {
-                1
-            } else {
-                txt_max_batch_size
-            };
-
-            if variant == ModelVariant::Quantized {
-                info!("Text model is quantized - batching disabled (max_batch_size=1)");
-            } else {
-                info!(
-                    "Text model supports batching (max_batch_size={})",
-                    effective_max_batch
-                );
-            }
-
-            Some(Arc::new(TextState {
-                session: Mutex::new(session),
-                tokenizer,
-                variant,
-                max_batch_size: effective_max_batch,
-            }))
-        } else {
-            None
-        };
-
-        // Load vision model if path provided
-        let vision = if let Some(model_path) = img_model {
-            let variant = ModelVariant::from_path(&model_path);
-            info!(
-                "Loading vision model: {:?} (variant: {:?})",
-                model_path, variant
-            );
-
-            let model_bytes = std::fs::read(&model_path)
-                .map_err(|e| anyhow::anyhow!("Failed to read model file: {}", e))?;
-
-            let builder = session_builder_factory()?;
-            let session = builder
-                .commit_from_memory(&model_bytes)
-                .map_err(|e| anyhow::anyhow!("Failed to load model: {}", e))?;
-
-            // Log execution providers (for debugging)
-            #[cfg(feature = "cuda")]
-            if use_gpu {
-                info!("Vision model loaded with CUDA provider configured.");
-                info!("If GPU is not used, ONNX Runtime may be falling back to CPU silently.");
-            }
-
-            info!(
-                "Vision model supports batching (max_batch_size={})",
-                img_max_batch_size
-            );
-
-            Some(Arc::new(VisionState {
-                session: Mutex::new(session),
-                max_batch_size: img_max_batch_size,
-            }))
-        } else {
-            None
-        };
-
-        let cold_start_time = cold_start.elapsed();
-        info!(
-            "Cold start complete - text model: {}, vision model: {}, averaging: {}, time: {:.2}ms",
-            if text.is_some() {
-                "loaded"
-            } else {
-                "not loaded"
-            },
-            if vision.is_some() {
-                "loaded"
-            } else {
-                "not loaded"
-            },
-            match default_avg_method {
-                image_stats::AveragingMethod::Arithmetic => "arithmetic",
-                image_stats::AveragingMethod::Geometric => "geometric",
-            },
-            cold_start_time.as_secs_f64() * 1000.0
-        );
-
         Ok(Self {
-            text,
-            vision,
+            text: Arc::new(OnceCell::new()),
+            vision: Arc::new(OnceCell::new()),
             default_avg_method,
             txt_model_path,
             tokenizer_path,
             img_model_path,
             gpu_enabled,
+            use_gpu_requested: use_gpu,
         })
     }
+
+    /// Lazy-load and initialize the text model if not already done
+    async fn get_text_state(&self) -> Result<Arc<TextState>, Error> {
+        self.text
+            .get_or_try_init(|| async {
+                // Ensure model and tokenizer exist (download if needed)
+                ensure_model_exists(&self.txt_model_path, "txt").await?;
+                ensure_model_exists(&self.tokenizer_path, "txt").await?;
+
+                let variant = ModelVariant::from_path(&self.txt_model_path);
+                info!(
+                    "Initializing text model: {:?} (variant: {:?})",
+                    self.txt_model_path, variant
+                );
+
+                let model_bytes = std::fs::read(&self.txt_model_path).map_err(|e| {
+                    Error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("Failed to read model file: {}", e),
+                    )
+                })?;
+
+                let builder = create_session_builder(self.use_gpu_requested)?;
+                let session = builder.commit_from_memory(&model_bytes).map_err(|e| {
+                    Error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("Failed to load model: {}", e),
+                    )
+                })?;
+
+                let tokenizer = Tokenizer::from_file(&self.tokenizer_path)
+                    .map_err(|e| Error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+                let txt_max_batch_size = std::env::var("TXT_MAX_BATCH_SIZE")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(16);
+
+                let effective_max_batch = if variant == ModelVariant::Quantized {
+                    1
+                } else {
+                    txt_max_batch_size
+                };
+
+                Ok(TextState {
+                    session: Mutex::new(session),
+                    tokenizer,
+                    variant,
+                    max_batch_size: effective_max_batch,
+                })
+            })
+            .await
+    }
+
+    /// Lazy-load and initialize the vision model if not already done
+    async fn get_vision_state(&self) -> Result<&VisionState, Error> {
+        self.vision
+            .get_or_try_init(|| async {
+                // Ensure model exists (download if needed)
+                ensure_model_exists(&self.img_model_path, "img").await?;
+
+                let variant = ModelVariant::from_path(&self.img_model_path);
+                info!(
+                    "Initializing vision model: {:?} (variant: {:?})",
+                    self.img_model_path, variant
+                );
+
+                let model_bytes = std::fs::read(&self.img_model_path).map_err(|e| {
+                    Error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("Failed to read model file: {}", e),
+                    )
+                })?;
+
+                let builder = create_session_builder(self.use_gpu_requested)?;
+                let session = builder.commit_from_memory(&model_bytes).map_err(|e| {
+                    Error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("Failed to load model: {}", e),
+                    )
+                })?;
+
+                let img_max_batch_size = std::env::var("IMG_MAX_BATCH_SIZE")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(4);
+
+                Ok(VisionState {
+                    session: Mutex::new(session),
+                    max_batch_size: img_max_batch_size,
+                })
+            })
+            .await
+    }
 }
+
+/// Create a session builder with requested execution providers
+fn create_session_builder(use_gpu: bool) -> Result<SessionBuilder, Error> {
+    #[cfg(feature = "cuda")]
+    let mut builder = SessionBuilder::new()
+        .map_err(|e| Error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .with_optimization_level(GraphOptimizationLevel::Level3)
+        .map_err(|e| Error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    #[cfg(not(feature = "cuda"))]
+    let builder = SessionBuilder::new()
+        .map_err(|e| Error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .with_optimization_level(GraphOptimizationLevel::Level3)
+        .map_err(|e| Error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    #[cfg(feature = "cuda")]
+    if use_gpu {
+        let cuda_provider: ExecutionProviderDispatch = CUDAExecutionProvider::default().into();
+        let cpu_provider: ExecutionProviderDispatch = CPUExecutionProvider::default().into();
+        builder = builder
+            .with_execution_providers([cuda_provider, cpu_provider])
+            .map_err(|e| {
+                warn!("Failed to initialize CUDA: {}. Falling back to CPU.", e);
+                Error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+            })?;
+    } else {
+        let cpu_provider: ExecutionProviderDispatch = CPUExecutionProvider::default().into();
+        builder = builder
+            .with_execution_providers([cpu_provider])
+            .map_err(|e| Error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    }
+
+    Ok(builder)
+}
+
+/// Ensure a model file exists locally, downloading it from HuggingFace if missing
+async fn ensure_model_exists(path: &Path, category: &str) -> Result<(), Error> {
+    if path.exists() {
+        return Ok(());
+    }
+
+    info!("Model file missing: {:?}. Attempting to download...", path);
+
+    let filename = path
+        .file_name()
+        .and_then(|f| f.to_str())
+        .ok_or_else(|| Error(StatusCode::INTERNAL_SERVER_ERROR, "Invalid model path".to_string()))?;
+
+    let base_url = if category == "txt" {
+        "https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/resolve/main"
+    } else {
+        "https://huggingface.co/nomic-ai/nomic-embed-vision-v1.5/resolve/main"
+    };
+
+    let url = if filename.ends_with(".onnx") {
+        format!("{}/onnx/{}", base_url, filename)
+    } else {
+        format!("{}/{}", base_url, filename)
+    };
+
+    download_file(&url, path).await
+}
+
+/// Download a file from URL to local path
+async fn download_file(url: &str, dest: &Path) -> Result<(), Error> {
+    info!("Downloading {} to {:?}...", url, dest);
+
+    // Create parent directories if they don't exist
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            Error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to create directory: {}", e),
+            )
+        })?;
+    }
+
+    let response = reqwest::get(url).await.map_err(|e| {
+        Error(
+            StatusCode::BAD_GATEWAY,
+            format!("Failed to download from HF: {}", e),
+        )
+    })?;
+
+    if !response.status().is_success() {
+        return Err(Error(
+            StatusCode::NOT_FOUND,
+            format!("HF returned {} for {}", response.status(), url),
+        ));
+    }
+
+    let bytes = response.bytes().await.map_err(|e| {
+        Error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to read download stream: {}", e),
+        )
+    })?;
+
+    std::fs::write(dest, bytes).map_err(|e| {
+        Error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to save model file: {}", e),
+        )
+    })?;
+
+    info!("Successfully downloaded {:?}", dest);
+    Ok(())
+}
+
 
 // ============================================================================
 // Request/Response Types - Text
@@ -693,19 +707,21 @@ struct ApiDoc;
 async fn main() {
     tracing_subscriber::fmt::init();
 
-    // Text model configuration
-    // Priority: TXT_MODEL (explicit) > model.onnx (full precision) > model_quantized.onnx (fallback)
-    // resolve_model_path handles both CLI (CWD) and double-click (exe-relative) scenarios
-    let txt_model_path = resolve_model_path_with_fallback("TXT_MODEL", "models/txt", "model.onnx");
+    // Model configuration - resolve paths but don't check for existence yet (lazy download)
+    let txt_model_path = std::env::var("TXT_MODEL")
+        .map(PathBuf::from)
+        .map(resolve_model_path)
+        .unwrap_or_else(|_| resolve_model_path("models/txt/model_quantized.onnx"));
 
     let tok_path = std::env::var("TOKENIZER")
         .map(PathBuf::from)
         .map(resolve_model_path)
         .unwrap_or_else(|_| resolve_model_path("models/txt/tokenizer.json"));
 
-    // Vision model configuration
-    // Priority: IMG_MODEL (explicit) > model.onnx (full precision) > model_quantized.onnx (fallback)
-    let img_model_path = resolve_model_path_with_fallback("IMG_MODEL", "models/img", "model.onnx");
+    let img_model_path = std::env::var("IMG_MODEL")
+        .map(PathBuf::from)
+        .map(resolve_model_path)
+        .unwrap_or_else(|_| resolve_model_path("models/img/model_quantized.onnx"));
 
     let port: u16 = std::env::var("PORT")
         .ok()
@@ -730,42 +746,23 @@ async fn main() {
         })
         .unwrap_or(image_stats::AveragingMethod::Geometric);
 
-    // Determine which models to load based on file existence
-    let txt_model = if txt_model_path.exists() && tok_path.exists() {
-        Some(txt_model_path.clone())
-    } else {
-        warn!(
-            "Text model not found at {:?} or tokenizer at {:?}",
-            txt_model_path, tok_path
-        );
-        None
-    };
-
-    let tokenizer = if tok_path.exists() {
-        Some(tok_path.clone())
-    } else {
-        None
-    };
-
-    let img_model = if img_model_path.exists() {
-        Some(img_model_path.clone())
-    } else {
-        warn!("Vision model not found at {:?}", img_model_path);
-        None
-    };
-
     // Initialize application state
-    let state =
-        match AppState::new(txt_model, tokenizer, img_model, default_avg_method, use_gpu).await {
-            Ok(state) => state,
-            Err(e) => {
-                eprintln!("Failed to initialize server: {}", e);
-                std::process::exit(1);
-            }
-        };
+    let state = match AppState::new(
+        txt_model_path,
+        tok_path,
+        img_model_path,
+        default_avg_method,
+        use_gpu,
+    )
+    .await
+    {
+        Ok(state) => state,
+        Err(e) => {
+            eprintln!("Failed to initialize server: {}", e);
+            std::process::exit(1);
+        }
+    };
 
-    let text_status = if state.text.is_some() { "✓" } else { "✗" };
-    let vision_status = if state.vision.is_some() { "✓" } else { "✗" };
     let gpu_status = if state.gpu_enabled {
         "✓ (CUDA)"
     } else {
@@ -773,14 +770,6 @@ async fn main() {
     };
 
     info!("🚀 Nomic embedding server ready on http://0.0.0.0:{}", port);
-    info!(
-        "   Text model:   {} /txt/embed, /txt/batch, /txt/query",
-        text_status
-    );
-    info!(
-        "   Vision model: {} /img/embed, /img/batch, /img/stats",
-        vision_status
-    );
     info!("   GPU Support:  {}", gpu_status);
     let body_limit_mb = std::env::var("MAX_BODY_SIZE_MB")
         .ok()
@@ -788,6 +777,7 @@ async fn main() {
         .unwrap_or(100);
     info!("   Max body size: {} MB", body_limit_mb);
     info!("📚 API docs available at http://0.0.0.0:{}/docs", port);
+    info!("💡 Models will be downloaded on first request if missing locally.");
 
     // Build router - base routes
     let app = Router::new()
@@ -905,8 +895,8 @@ fn build_cors_layer() -> CorsLayer {
 async fn health_handler(State(state): State<AppState>) -> Json<HealthResponse> {
     Json(HealthResponse {
         status: "OK".to_string(),
-        text_model: state.text.is_some(),
-        vision_model: state.vision.is_some(),
+        text_model: state.txt_model_path.exists() || state.text.get().is_some(),
+        vision_model: state.img_model_path.exists() || state.vision.get().is_some(),
         gpu_enabled: state.gpu_enabled,
     })
 }
@@ -926,20 +916,11 @@ async fn info_handler(State(state): State<AppState>) -> Json<InfoResponse> {
             image_stats::AveragingMethod::Arithmetic => "arithmetic".to_string(),
             image_stats::AveragingMethod::Geometric => "geometric".to_string(),
         },
-        txt_model: state
-            .txt_model_path
-            .as_ref()
-            .map(|p| p.to_string_lossy().to_string()),
-        tokenizer: state
-            .tokenizer_path
-            .as_ref()
-            .map(|p| p.to_string_lossy().to_string()),
-        img_model: state
-            .img_model_path
-            .as_ref()
-            .map(|p| p.to_string_lossy().to_string()),
-        txt_max_batch_size: state.text.as_ref().map(|t| t.max_batch_size),
-        img_max_batch_size: state.vision.as_ref().map(|v| v.max_batch_size),
+        txt_model: Some(state.txt_model_path.to_string_lossy().to_string()),
+        tokenizer: Some(state.tokenizer_path.to_string_lossy().to_string()),
+        img_model: Some(state.img_model_path.to_string_lossy().to_string()),
+        txt_max_batch_size: state.text.get().map(|t| t.max_batch_size),
+        img_max_batch_size: state.vision.get().map(|v| v.max_batch_size),
         gpu_enabled: state.gpu_enabled,
     })
 }
@@ -966,12 +947,7 @@ async fn txt_embed_handler(
 ) -> Result<Json<TextEmbedResponse>, Error> {
     let start = Instant::now();
 
-    let text_state = state.text.as_ref().ok_or_else(|| {
-        Error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "Text model not loaded".to_string(),
-        )
-    })?;
+    let text_state = state.get_text_state().await?;
 
     if req.dim == 0 || req.dim > 768 {
         return Err(Error(
@@ -1022,12 +998,7 @@ async fn txt_batch_handler(
 ) -> Result<Json<TextBatchResponse>, Error> {
     let start = Instant::now();
 
-    let text_state = state.text.as_ref().ok_or_else(|| {
-        Error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "Text model not loaded".to_string(),
-        )
-    })?;
+    let text_state = state.get_text_state().await?;
 
     if req.dim == 0 || req.dim > 768 {
         return Err(Error(
@@ -1044,7 +1015,7 @@ async fn txt_batch_handler(
             StatusCode::BAD_REQUEST,
             format!(
                 "Batching is not supported for quantized text models. This model ({:?}) exhibits severe cross-sample interference when batched (~0.5 max diff, ~50-60%% cosine similarity). Use the full precision (FP32) model for batching, or process texts individually (batch_size=1).",
-                state.txt_model_path.as_ref().and_then(|p| p.file_name())
+                state.txt_model_path.file_name()
             ),
         ));
     }
@@ -1117,12 +1088,7 @@ async fn txt_query_handler(
 ) -> Result<Json<TextEmbedResponse>, Error> {
     let start = Instant::now();
 
-    let text_state = state.text.as_ref().ok_or_else(|| {
-        Error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "Text model not loaded".to_string(),
-        )
-    })?;
+    let text_state = state.get_text_state().await?;
 
     if req.dim == 0 || req.dim > 768 {
         return Err(Error(
@@ -1178,12 +1144,7 @@ async fn img_embed_handler(
 ) -> Result<Json<ImageEmbedResponse>, Error> {
     let start = Instant::now();
 
-    let vision_state = state.vision.as_ref().ok_or_else(|| {
-        Error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "Vision model not loaded".to_string(),
-        )
-    })?;
+    let vision_state = state.get_vision_state().await?;
 
     if req.dim == 0 || req.dim > 768 {
         return Err(Error(
@@ -1234,12 +1195,7 @@ async fn img_batch_handler(
 ) -> Result<Json<ImageBatchResponse>, Error> {
     let start = Instant::now();
 
-    let vision_state = state.vision.as_ref().ok_or_else(|| {
-        Error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "Vision model not loaded".to_string(),
-        )
-    })?;
+    let vision_state = state.get_vision_state().await?;
 
     if req.dim == 0 || req.dim > 768 {
         return Err(Error(
