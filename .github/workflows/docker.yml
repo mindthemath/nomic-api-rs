@@ -156,7 +156,8 @@ jobs:
         id: tags
         run: |
           TAGS="${{ env.DOCKER_IMAGE }}:${{ steps.version.outputs.version }}-gpu${{ matrix.suffix }}"
-          while IFS= read -r tag; do
+          while IFS= read -r tag;
+ do
             if [ -n "$tag" ]; then
               TAGS="$TAGS"$
 '    '"${{ env.DOCKER_IMAGE }}:${tag}"
@@ -262,4 +263,5 @@ ${{ env.DOCKER_IMAGE }}:cpu
 ${{ env.DOCKER_IMAGE }}:slim
 " >> $GITHUB_STEP_SUMMARY
           echo "```" >> $GITHUB_STEP_SUMMARY
-          echo "💡 Models will be downloaded on first request to /app/models." >> $GITHUB_STEP_SUMMARY
+          echo "Models will be downloaded on first request to /app/models." >> $GITHUB_STEP_SUMMARY
+
