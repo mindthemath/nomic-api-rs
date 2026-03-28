@@ -97,18 +97,20 @@ jobs:
           fi
 
       - name: Upload binary artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}
           path: nomic-embed-v1.5-${{ env.VERSION }}-${{ matrix.artifact }}.tar.gz
+          retention-days: 1
 
       - name: Upload CUDA libraries artifact (x64 only)
         if: matrix.artifact == 'linux-x64'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: cuda-libs
           path: nomic-embed-v1.5-${{ env.VERSION }}-cuda-libs.tar.gz
           if-no-files-found: warn
+          retention-days: 1
 
   build-macos:
     runs-on: macos-latest
@@ -139,10 +141,11 @@ jobs:
           tar -czvf ../nomic-embed-v1.5-${VERSION}-macos-arm64.tar.gz nomic-embed-v1.5-${VERSION}-macos-arm64
 
       - name: Upload binary artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: macos-arm64
           path: nomic-embed-v1.5-*.tar.gz
+          retention-days: 1
 
   package-models:
     strategy:
@@ -198,10 +201,11 @@ jobs:
           tar -czvf ../nomic-embed-v1.5-${VERSION}-${{ matrix.artifact }}.tar.gz nomic-embed-v1.5-${VERSION}-${{ matrix.artifact }}
 
       - name: Upload models artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}
           path: nomic-embed-v1.5-*.tar.gz
+          retention-days: 1
 
   release:
     needs: [build-linux, build-macos, package-models]
